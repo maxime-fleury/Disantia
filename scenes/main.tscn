@@ -1,0 +1,75 @@
+[gd_scene load_steps=15 format=3]
+
+[ext_resource type="Script" path="res://scripts/world/world.gd" id="1_world"]
+[ext_resource type="Script" path="res://scripts/world/terrain.gd" id="2_terrain"]
+[ext_resource type="PackedScene" path="res://scenes/player.tscn" id="3_player"]
+[ext_resource type="PackedScene" path="res://scenes/hud.tscn" id="4_hud"]
+[ext_resource type="Script" path="res://scripts/world/scatter.gd" id="5_scatter"]
+[ext_resource type="Script" path="res://scripts/world/camp.gd" id="6_camp"]
+[ext_resource type="Script" path="res://scripts/world/qi_zones.gd" id="7_qizones"]
+[ext_resource type="Script" path="res://scripts/world/safe_zone.gd" id="8_safezone"]
+[ext_resource type="Script" path="res://scripts/world/enemy_camps.gd" id="9_camps"]
+[ext_resource type="Script" path="res://scripts/world/signposts.gd" id="10_signs"]
+[ext_resource type="Script" path="res://scripts/world/quest_npc.gd" id="11_npc"]
+
+[sub_resource type="ProceduralSkyMaterial" id="Sky_mat"]
+sky_top_color = Color(0.25, 0.42, 0.72, 1)
+sky_horizon_color = Color(0.72, 0.78, 0.86, 1)
+ground_bottom_color = Color(0.18, 0.16, 0.14, 1)
+ground_horizon_color = Color(0.62, 0.66, 0.7, 1)
+sun_angle_max = 24.0
+sun_curve = 0.08
+
+[sub_resource type="Sky" id="Sky_res"]
+sky_material = SubResource("Sky_mat")
+
+[sub_resource type="Environment" id="Env_res"]
+background_mode = 2
+sky = SubResource("Sky_res")
+ambient_light_source = 3
+ambient_light_energy = 1.1
+fog_enabled = true
+fog_light_color = Color(0.72, 0.79, 0.88, 1)
+fog_density = 0.0026
+fog_sky_affect = 0.35
+
+[node name="Main" type="Node3D"]
+script = ExtResource("1_world")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env_res")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+light_color = Color(1, 0.96, 0.88, 1)
+shadow_enabled = true
+directional_shadow_max_distance = 220.0
+
+[node name="Terrain" type="StaticBody3D" parent="."]
+script = ExtResource("2_terrain")
+
+[node name="Scatter" type="Node3D" parent="."]
+script = ExtResource("5_scatter")
+
+[node name="Camp" type="Node3D" parent="."]
+script = ExtResource("6_camp")
+
+[node name="QiZones" type="Node3D" parent="."]
+script = ExtResource("7_qizones")
+
+[node name="EnemyCamps" type="Node3D" parent="."]
+script = ExtResource("9_camps")
+
+[node name="Signposts" type="Node3D" parent="."]
+script = ExtResource("10_signs")
+
+[node name="SafeZone" type="Node3D" parent="."]
+script = ExtResource("8_safezone")
+
+[node name="QuestNpc" type="StaticBody3D" parent="."]
+script = ExtResource("11_npc")
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.9, 0, 3.5)
+
+[node name="Player" parent="." instance=ExtResource("3_player")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 8, 0)
+
+[node name="HUD" parent="." instance=ExtResource("4_hud")]

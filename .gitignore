@@ -1,0 +1,13 @@
+# Godot 4+ specific ignores
+.godot/
+/android/
+
+# Web and Windows export output (rebuilt by tools/export_*.sh)
+/build/
+
+# Editor session metadata, not part of the project
+/.freebuff/
+
+# OS noise
+.DS_Store
+Thumbs.db

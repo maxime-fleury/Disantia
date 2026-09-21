@@ -1,0 +1,265 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://scripts/ui/hud.gd" id="1_hud"]
+
+[node name="HUD" type="CanvasLayer"]
+script = ExtResource("1_hud")
+
+[node name="HudRoot" type="Control" parent="."]
+unique_name_in_owner = true
+anchor_right = 1.0
+anchor_bottom = 1.0
+mouse_filter = 2
+
+[node name="TopLeft" type="VBoxContainer" parent="HudRoot"]
+layout_mode = 1
+offset_left = 14.0
+offset_top = 12.0
+offset_right = 330.0
+offset_bottom = 420.0
+mouse_filter = 2
+theme_override_constants/separation = 8
+
+[node name="CultivationPanel" type="PanelContainer" parent="HudRoot/TopLeft"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Body" type="VBoxContainer" parent="HudRoot/TopLeft/CultivationPanel"]
+layout_mode = 2
+theme_override_constants/separation = 3
+
+[node name="RealmLabel" type="Label" parent="HudRoot/TopLeft/CultivationPanel/Body"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "Body Tempering · Stage 1"
+
+[node name="CoeffLabel" type="Label" parent="HudRoot/TopLeft/CultivationPanel/Body"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+text = "Stat gain ×1.00"
+
+[node name="CrystalsLabel" type="Label" parent="HudRoot/TopLeft/CultivationPanel/Body"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 13
+theme_override_colors/font_color = Color(0.6, 0.91, 0.98, 1)
+text = "Crystals 0"
+
+[node name="RefinementLabel" type="Label" parent="HudRoot/TopLeft/CultivationPanel/Body"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "REFINEMENT 0"
+
+[node name="RefinementBar" type="ProgressBar" parent="HudRoot/TopLeft/CultivationPanel/Body"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+max_value = 1.0
+step = 0.001
+show_percentage = false
+
+[node name="InsightLabel" type="Label" parent="HudRoot/TopLeft/CultivationPanel/Body"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+text = "INSIGHT 0%"
+
+[node name="InsightBar" type="ProgressBar" parent="HudRoot/TopLeft/CultivationPanel/Body"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+max_value = 1.0
+step = 0.001
+show_percentage = false
+
+[node name="StatsPanel" type="PanelContainer" parent="HudRoot/TopLeft"]
+unique_name_in_owner = true
+layout_mode = 2
+
+[node name="Body" type="VBoxContainer" parent="HudRoot/TopLeft/StatsPanel"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Header" type="HBoxContainer" parent="HudRoot/TopLeft/StatsPanel/Body"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="StatsTitle" type="Label" parent="HudRoot/TopLeft/StatsPanel/Body/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 12
+text = "BODY"
+
+[node name="StatsToggle" type="Button" parent="HudRoot/TopLeft/StatsPanel/Body/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+tooltip_text = "Fold the stat readout away (V)"
+text = "Show"
+
+[node name="StatRows" type="VBoxContainer" parent="HudRoot/TopLeft/StatsPanel/Body"]
+unique_name_in_owner = true
+visible = false
+layout_mode = 2
+theme_override_constants/separation = 4
+
+[node name="QuestPanel" type="PanelContainer" parent="HudRoot"]
+unique_name_in_owner = true
+layout_mode = 1
+anchors_preset = -1
+anchor_left = 0.5
+anchor_right = 0.5
+anchor_top = 0.0
+anchor_bottom = 0.0
+offset_left = -240.0
+offset_top = 12.0
+offset_right = 240.0
+offset_bottom = 74.0
+grow_horizontal = 2
+mouse_filter = 2
+
+[node name="Body" type="VBoxContainer" parent="HudRoot/QuestPanel"]
+layout_mode = 2
+theme_override_constants/separation = 3
+
+[node name="Header" type="HBoxContainer" parent="HudRoot/QuestPanel/Body"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="QuestTitle" type="Label" parent="HudRoot/QuestPanel/Body/Header"]
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+theme_override_colors/font_color = Color(1, 0.84, 0.43, 1)
+text = "TASK"
+
+[node name="QuestName" type="Label" parent="HudRoot/QuestPanel/Body/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 12
+text = "Speak to the elder by the fire"
+text_overrun_behavior = 3
+
+[node name="ProgressRow" type="HBoxContainer" parent="HudRoot/QuestPanel/Body"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="QuestBar" type="ProgressBar" parent="HudRoot/QuestPanel/Body/ProgressRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 8)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 4
+max_value = 1.0
+step = 0.001
+show_percentage = false
+
+[node name="QuestProgress" type="Label" parent="HudRoot/QuestPanel/Body/ProgressRow"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.72, 0.76, 0.82, 1)
+text = ""
+
+[node name="ActionPanel" type="PanelContainer" parent="HudRoot"]
+unique_name_in_owner = true
+layout_mode = 1
+anchor_left = 1.0
+anchor_right = 1.0
+offset_left = -344.0
+offset_top = 12.0
+offset_right = -14.0
+offset_bottom = 340.0
+
+[node name="Body" type="VBoxContainer" parent="HudRoot/ActionPanel"]
+layout_mode = 2
+theme_override_constants/separation = 7
+
+[node name="Header" type="HBoxContainer" parent="HudRoot/ActionPanel/Body"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="Title" type="Label" parent="HudRoot/ActionPanel/Body/Header"]
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 12
+text = "TRAINING"
+
+[node name="SettingsButton" type="Button" parent="HudRoot/ActionPanel/Body/Header"]
+unique_name_in_owner = true
+layout_mode = 2
+focus_mode = 0
+tooltip_text = "Open the settings panel (Tab)"
+text = "Settings"
+
+[node name="DrillRows" type="VBoxContainer" parent="HudRoot/ActionPanel/Body"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="AuraLabel" type="Label" parent="HudRoot/ActionPanel/Body"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.72, 0.76, 0.82, 1)
+autowrap_mode = 3
+text = "Aura: Qi"
+
+[node name="PressureLabel" type="Label" parent="HudRoot/ActionPanel/Body"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.72, 0.76, 0.82, 1)
+autowrap_mode = 3
+text = "Qi Pressure"
+
+[node name="Hint" type="Label" parent="HudRoot/ActionPanel/Body"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.72, 0.76, 0.82, 1)
+autowrap_mode = 3
+text = "Tap a drill to train, tap again to stop. Click to strike."
+
+[node name="LogPanel" type="PanelContainer" parent="HudRoot"]
+unique_name_in_owner = true
+layout_mode = 1
+anchor_top = 1.0
+anchor_bottom = 1.0
+grow_vertical = 0
+offset_left = 14.0
+offset_top = -208.0
+offset_right = 460.0
+offset_bottom = -96.0
+
+[node name="LogText" type="RichTextLabel" parent="HudRoot/LogPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+bbcode_enabled = true
+scroll_following = true
+scroll_active = false
+theme_override_font_sizes/normal_font_size = 12
+
+[node name="HelpPanel" type="PanelContainer" parent="HudRoot"]
+unique_name_in_owner = true
+layout_mode = 1
+anchor_left = 0.5
+anchor_right = 0.5
+anchor_top = 1.0
+anchor_bottom = 1.0
+grow_vertical = 0
+offset_left = -330.0
+offset_top = -92.0
+offset_right = 330.0
+offset_bottom = -14.0
+
+[node name="StatusLabel" type="Label" parent="HudRoot/HelpPanel"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 12
+horizontal_alignment = 1
+autowrap_mode = 3

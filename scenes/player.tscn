@@ -1,0 +1,49 @@
+[gd_scene load_steps=10 format=3]
+
+[ext_resource type="Script" path="res://scripts/player/player_controller.gd" id="1_player"]
+[ext_resource type="Script" path="res://scripts/player/camera_rig.gd" id="2_camera"]
+[ext_resource type="Script" path="res://scripts/player/character_animator.gd" id="3_animator"]
+[ext_resource type="PackedScene" path="res://assets/characters/Monk.gltf" id="4_monk"]
+[ext_resource type="Script" path="res://scripts/player/aura.gd" id="5_aura"]
+[ext_resource type="Script" path="res://scripts/player/striker.gd" id="6_striker"]
+[ext_resource type="Script" path="res://scripts/ui/avatar_overlay.gd" id="7_overlay"]
+[ext_resource type="Script" path="res://scripts/player/qi_pressure.gd" id="8_pressure"]
+
+[sub_resource type="CapsuleShape3D" id="Shape_body"]
+radius = 0.35
+height = 1.7
+
+[node name="Player" type="CharacterBody3D"]
+script = ExtResource("1_player")
+
+[node name="Collision" type="CollisionShape3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.85, 0)
+shape = SubResource("Shape_body")
+
+[node name="Model" type="Node3D" parent="."]
+script = ExtResource("3_animator")
+
+[node name="Monk" parent="Model" instance=ExtResource("4_monk")]
+
+[node name="Aura" type="Node3D" parent="."]
+script = ExtResource("5_aura")
+
+[node name="Striker" type="Node3D" parent="."]
+script = ExtResource("6_striker")
+
+[node name="QiPressure" type="Node3D" parent="."]
+script = ExtResource("8_pressure")
+
+[node name="Overlay" type="Node3D" parent="."]
+script = ExtResource("7_overlay")
+
+[node name="CameraRig" type="Node3D" parent="."]
+script = ExtResource("2_camera")
+
+[node name="SpringArm3D" type="SpringArm3D" parent="CameraRig"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+spring_length = 6.0
+margin = 0.25
+
+[node name="Camera3D" type="Camera3D" parent="CameraRig/SpringArm3D"]
+fov = 72.0
