@@ -47,8 +47,7 @@ var last_crime: String = ""
 func _ready() -> void:
 	var saved: Dictionary = PlayerData.take_loaded_module("law")
 	severity = saved.get("severity", {})
-	if Sky != null:
-		Clock.day_passed.connect(_on_day_passed)
+	Clock.day_passed.connect(_on_day_passed)
 
 
 ## A day without trouble is worth a rung. Tied to the clock rather than to a timer so that

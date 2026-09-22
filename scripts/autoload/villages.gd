@@ -233,6 +233,15 @@ const FOLK_LINES: Array = [
 ]
 
 ## Reputation steps. A number would be a stat; a word is something the player can hold.
+## What being wanted costs on top of everything else, per rung of the ladder. A village will
+## still sell to a body the watch is watching — that is what makes the rung a *price* instead of
+## a door — and the top rung shuts the shutters instead, which is where `Law.shops_closed`
+## takes over.
+##
+## Applied inside `price_factor` rather than at the shelf, so it is a fact about every price in
+## the game at once: the wares, the pills and the anvil all multiply by this number, and none of
+## them had to be changed to learn about the law.
+const LAW_SURCHARGE: Array = [1.0, 1.15, 1.35, 1.6]
 const REP_STEPS: Array = [0, 4, 10, 18]
 const REP_LABELS: Array = ["a stranger", "known", "trusted", "kin"]
 
@@ -385,7 +394,10 @@ func price_factor(village_id: String) -> float:
 	for i in REP_STEPS.size():
 		if total >= int(REP_STEPS[i]):
 			step = i
-	return 1.0 - 0.055 * float(step)
+	var wanted: int = 0
+	if Law != null:
+		wanted = Law.wanted_at(village_id)
+	return (1.0 - 0.055 * float(step)) * float(LAW_SURCHARGE[clampi(wanted, 0, LAW_SURCHARGE.size() - 1)])
 
 
 func adjust_rep(village_id: String, amount: int, reason: String) -> void:
@@ -755,6 +767,12 @@ func _shop_panel(village_id: String) -> Dictionary:
 	]
 	if Law.shops_closed(village_id):
 		subtitle = "The shutters are up. %s will not sell to an outlaw." % String(village.get("name", ""))
+	elif Law.wanted_at(village_id) > 0:
+		# Said out loud, because a price that quietly doubles is indistinguishable from a bug —
+		# and because the surcharge is a thing the player is meant to feel and pay off.
+		subtitle += "  Everything is %d%% dearer until they forget." % int(
+			(LAW_SURCHARGE[clampi(Law.wanted_at(village_id), 0, LAW_SURCHARGE.size() - 1)] - 1.0)
+				* 100.0)
 	return {"title": "%s — what is for sale" % String(village.get("name", "")), "subtitle": subtitle,
 		"rows": rows, "kind": "shop", "village": village_id}
 

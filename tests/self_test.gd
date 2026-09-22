@@ -178,6 +178,17 @@ func _run() -> void:
 	await _test_hud_intro()
 	await _test_hud_layout()
 	await _test_hud_progress()
+	# The valley, the watch, the tower and the boards sit here on purpose. Each of them changes
+	# the world it measures — crimes are committed, a tower run is walked, a mark is spawned and
+	# killed — and everything that counts raiders, camps or steps has had its say by now. The
+	# save round trip comes after them, so what they wrote is what gets loaded back.
+	await _test_valley()
+	await _test_watch()
+	await _test_tower()
+	_test_clock()
+	_test_forge()
+	await _test_boards()
+	await _test_world_state_line()
 	# Before the save round trip rather than early in the run: this section changes the world
 	# itself — a camp's raiders are spared and another camp is burned — and every test that
 	# counts raiders has already had its say by here.
@@ -3736,6 +3747,686 @@ func _test_quests() -> void:
 ## nothing can open is a table of strings. The second is that a choice outlives the launch it
 ## was made in: the world is rebuilt from scratch every time the game starts, so a camp that
 ## was burned only stays burned if the world is told about the decision again as it builds.
+# --------------------------------------------------------------------- the valley
+
+## The three villages: where they stand, who is in them, and what makes them places.
+##
+## Every claim here is one a boot log cannot show. A village that is *in the table* and not on
+## the map reads identically to one that is on the map and built on top of the spawn camp —
+## which is exactly what happened: three squares, three palisades and a made disc of ground per
+## village, all standing over the home fire, because nothing ever moved the site into the world.
+## So the placement is measured against the things it must not be standing on.
+func _test_valley() -> void:
+	_section("The valley")
+	var placed: Node = get_tree().root.get_node_or_null("Main/Villages")
+	_check(placed != null, "the villages are part of the world")
+	if placed == null:
+		return
+	var sites: Array = placed.call("sites")
+	_check(sites.size() == Villages.all().size(),
+		"one village built per entry in the table",
+		"%d built, %d in the table" % [sites.size(), Villages.all().size()])
+	_check(sites.size() >= 3, "and there are three of them", "%d" % sites.size())
+
+	var camp: Node = get_tree().root.get_node_or_null("Main/Camp")
+	var camp_radius: float = 0.0
+	var zone: Node = get_tree().get_first_node_in_group("safe_zone")
+	if zone != null:
+		camp_radius = float(zone.get("radius"))
+	var tower: Node = get_tree().get_first_node_in_group("tower_site")
+
+	var centres: Array = []
+	var staffed: int = 0
+	var fenced: int = 0
+	for site: Node in sites:
+		var summary: Dictionary = site.call("summary")
+		var name: String = String(summary["id"])
+		var centre: Vector3 = site.call("centre")
+		centres.append(centre)
+		# Beside the road, not on the camp: `near_site` is what the scatter and the camps ask
+		# before they drop anything, so a village that fails this is one that flattened the
+		# spawn or a raider fire.
+		_check(Vector2(centre.x, centre.z).length() > camp_radius + 12.0,
+			"%s stands clear of the home camp" % name,
+			"%.0f m out, camp ward at %.0f m" % [Vector2(centre.x, centre.z).length(), camp_radius])
+		if tower != null:
+			var base: Vector3 = tower.call("base_position")
+			_check(Vector2(centre.x - base.x, centre.z - base.z).length() > 20.0,
+				"and clear of the tower", "%.0f m" % Vector2(
+					centre.x - base.x, centre.z - base.z).length())
+		_check(int(summary["people"]) >= 5, "%s has people in it" % name,
+			"%d" % int(summary["people"]))
+		_check(int(summary["guards"]) >= 2, "and a watch", "%d" % int(summary["guards"]))
+		_check(int(summary["blocks"]) > 40, "and something solid to walk into",
+			"%d blockers" % int(summary["blocks"]))
+		if int(summary["people"]) >= 5 and int(summary["guards"]) >= 2:
+			staffed += 1
+		if int(summary["blocks"]) > 40:
+			fenced += 1
+		# The made ground, where the *geometry* is. Every check above this one measures the
+		# bookkeeping — the registered centre, the counts, the registry — and a village whose
+		# square is built at the world's origin has all of that right and is still standing on
+		# the spawn camp. This is the one that asks where the thing actually is.
+		var square: Node3D = site.get_node_or_null("SquareBody") as Node3D
+		if square != null:
+			var off: float = Vector2(square.global_position.x - centre.x,
+				square.global_position.z - centre.z).length()
+			_check(off < 2.0, "%s's made ground is where it says it is" % name,
+				"%.1f m off its own centre" % off)
+		# A village is a sanctuary: the same registry the raiders and the respawn read.
+		_check(Haven.contains(centre + Vector3(0.0, 0.6, 0.0)),
+			"%s is a sanctuary" % name)
+		_check(Haven.has(name), "and the registry knows it by name" % [], name)
+	_check(staffed == sites.size(), "every village is inhabited and guarded",
+		"%d of %d" % [staffed, sites.size()])
+	_check(fenced == sites.size(), "and every one of them is a built place",
+		"%d of %d" % [fenced, sites.size()])
+
+	# No two villages on top of each other, and none of them on the tower's plain.
+	var closest: float = INF
+	for i in centres.size():
+		for j in range(i + 1, centres.size()):
+			closest = minf(closest, Vector2(
+				centres[i].x - centres[j].x, centres[i].z - centres[j].z).length())
+	_check(closest > 30.0, "the villages are spread across the rings, not stacked",
+		"closest pair %.0f m apart" % closest)
+
+	# The people are *in the world*, one body per entry in the table. A table of fifteen names
+	# and three bodies is how a game ends up with a crowd nobody can walk up to.
+	var bodies: Array = get_tree().get_nodes_in_group("village_npc")
+	var expected_people: int = 0
+	for entry: Dictionary in Villages.all():
+		expected_people += Villages.people_of(String(entry["id"])).size()
+	_check(bodies.size() == expected_people,
+		"every person in the table is standing in the world",
+		"%d bodies for %d people" % [bodies.size(), expected_people])
+	var named: int = 0
+	var misplaced: int = 0
+	for body: Node in bodies:
+		var entry: Dictionary = Villages.person(String(body.get("person_id")))
+		if not entry.is_empty():
+			named += 1
+		var site: Dictionary = Haven.site(String(body.get("village_id")))
+		if site.is_empty():
+			continue
+		var centre: Vector3 = site["centre"]
+		if Vector2(body.global_position.x - centre.x, body.global_position.z - centre.z).length() \
+				> float(site["radius"]) + 8.0:
+			misplaced += 1
+	_check(named == bodies.size(), "and every body is somebody the story knows",
+		"%d of %d" % [named, bodies.size()])
+	_check(misplaced == 0, "and none of them wandered off their own square",
+		"%d outside their palisade" % misplaced)
+
+	# The chain is a road rather than a checklist: the last step of a village's business puts
+	# something in your hands to carry to the next one. That is the whole claim, and it is a
+	# fact about the table.
+	var hands_off: int = 0
+	var parcel_steps: int = 0
+	for entry: Dictionary in Villages.all():
+		var village_id: String = String(entry["id"])
+		var chain: Array = Villages.chain(village_id)
+		_check(not chain.is_empty(), "%s has business of its own" % village_id)
+		for step: Dictionary in chain:
+			var parcel: Dictionary = step.get("parcel", {})
+			if not parcel.is_empty():
+				parcel_steps += 1
+		var last: Dictionary = chain[chain.size() - 1]
+		# The last village has nowhere further to send you — its chain ends at the tower's own
+		# top, which is the end of the road rather than a delivery — so the claim is that a
+		# chain *ends in something that is not this village*, and that the ending is a real
+		# thing (a parcel with a name and an address, or the top of the stair).
+		var hand_off: Dictionary = last.get("parcel", {})
+		var ends_outward: bool = not hand_off.is_empty() \
+			or String(last.get("kind", "")) == "floor" or String(last.get("kind", "")) == "warden"
+		_check(ends_outward, "and its last step sends you somewhere other than back here",
+			"last step is '%s' (%s)" % [String(last.get("id", "")), String(last.get("kind", ""))])
+		if not hand_off.is_empty():
+			hands_off += 1
+			_check(String(hand_off.get("name", "")) != "" and String(last.get("to", "")) != "",
+				"and the parcel names the village it is for",
+				"%s -> %s" % [String(hand_off.get("name", "")), String(last.get("to", ""))])
+	_check(hands_off == Villages.all().size() - 1 or hands_off == Villages.all().size(),
+		"so the villages are walked in an order",
+		"%d of %d chains end in a delivery" % [hands_off, Villages.all().size()])
+	_check(parcel_steps >= 2, "and the parcels are what carries you on",
+		"%d delivery steps" % parcel_steps)
+
+	# Reputation: a number per village, a name for it, and a price that follows it.
+	var village_id: String = String((Villages.all()[0] as Dictionary)["id"])
+	var before: int = Villages.rep_of(village_id)
+	var label_before: String = Villages.rep_label(village_id)
+	var price_before: float = Villages.price_factor(village_id)
+	Villages.adjust_rep(village_id, 12, "a test")
+	_check(Villages.rep_of(village_id) == before + 12, "standing is counted, not implied",
+		"%d -> %d" % [before, Villages.rep_of(village_id)])
+	_check(Villages.rep_label(village_id) != label_before or before >= 18,
+		"and enough of it changes what they call you",
+		"%s -> %s" % [label_before, Villages.rep_label(village_id)])
+	_check(Villages.price_factor(village_id) < price_before + 0.001,
+		"and the shelf does not get more expensive for it",
+		"%.2f -> %.2f" % [price_before, Villages.price_factor(village_id)])
+	_check(Villages.price_factor(village_id) <= 1.0,
+		"standing never makes a price worse", "%.2f" % Villages.price_factor(village_id))
+
+	# The other half of the multiplier, and the one the law owns: a village will still sell to a
+	# body the watch is watching, but it charges for the risk. Every price in the game goes
+	# through this one function — the wares, the pills, the anvil — so this is a fact about all
+	# of them at once rather than about one panel.
+	var calm: float = Villages.price_factor(village_id)
+	var other: String = String((Villages.all()[1] as Dictionary)["id"])
+	var other_calm: float = Villages.price_factor(other)
+	Law.severity.clear()
+	Law.add_crime("assault", village_id, "a test")
+	var watched: float = Villages.price_factor(village_id)
+	_check(watched > calm, "being wanted makes everything dearer",
+		"%.2f -> %.2f at %s" % [calm, watched, Law.label(Law.wanted_at(village_id))])
+	_check(_near(Villages.price_factor(other), other_calm, 0.001),
+		"and only in the village that has something against you",
+		"%.2f -> %.2f there" % [other_calm, Villages.price_factor(other)])
+	Law.severity.clear()
+	_check(_near(Villages.price_factor(village_id), calm, 0.001),
+		"which the slate being clean undoes",
+		"%.2f" % Villages.price_factor(village_id))
+
+
+## The watch, and the law it enforces.
+##
+## The strongest idea in the valley and the one with the most ways to be a lie: a guard that
+## walks a beat that does not exist, or that patrols *inside* its own palisade, is scenery. A
+## wanted ladder nobody can climb is a number. And a cell is worth nothing unless it is a place
+## the body is actually in and can actually get out of.
+func _test_watch() -> void:
+	_section("The watch")
+	var guards: Array = get_tree().get_nodes_in_group("guard")
+	_check(guards.size() >= 6, "the villages are watched", "%d guards" % guards.size())
+	var beats: int = 0
+	var outside: int = 0
+	var armed: int = 0
+	for guard: Node in guards:
+		var route: PackedVector2Array = guard.get("route")
+		if route.size() >= 2:
+			beats += 1
+		var site: Dictionary = Haven.site(String(guard.get("village_id")))
+		if site.is_empty() or route.is_empty():
+			continue
+		var centre: Vector3 = site["centre"]
+		# The beat is *outside* the palisade: the fighting is meant to happen out there, and a
+		# guard pacing the square is a guard watching the wrong side of the wall.
+		var inside: bool = true
+		for point: Vector2 in route:
+			if Vector2(point.x - centre.x, point.y - centre.z).length() > float(site["radius"]) - 1.0:
+				inside = false
+				break
+		if not inside:
+			outside += 1
+		if float(guard.get("attack_damage")) > 0.0:
+			armed += 1
+	_check(beats == guards.size(), "every guard walks a beat",
+		"%d of %d with a route" % [beats, guards.size()])
+	_check(outside >= guards.size() - 1, "and walks it outside the palisade, where the fighting is",
+		"%d of %d" % [outside, guards.size()])
+	_check(armed == guards.size(), "and every one of them can actually hit something",
+		"%d of %d" % [armed, guards.size()])
+
+	# The ladder. Nothing on it is a global flag: a body that burned a camp in one village has to
+	# be able to walk into another and buy a pill.
+	var village_id: String = String((Villages.all()[0] as Dictionary)["id"])
+	var other_id: String = String((Villages.all()[1] as Dictionary)["id"])
+	Law.severity.clear()
+	_check(not Law.is_wanted(), "a body starts with nothing on it")
+	Law.add_crime("assault", village_id, "a test")
+	_check(Law.wanted_at(village_id) > 0, "striking somebody is a crime",
+		"%d — %s" % [Law.wanted_at(village_id), Law.label(Law.wanted_at(village_id))])
+	_check(not Law.is_wanted() == false, "and now there is something on the body")
+	_check(Law.wanted_at(other_id) == 0, "which is not the next village's business",
+		"%d there" % Law.wanted_at(other_id))
+	Law.add_crime("assault", village_id, "a test")
+	_check(Law.guards_hostile(village_id), "a second one and the watch comes for you",
+		"%s" % Law.label(Law.wanted_at(village_id)))
+	Law.add_crime("assault", village_id, "a test")
+	_check(Law.shops_closed(village_id), "a third and the doors shut",
+		"%s" % Law.label(Law.wanted_at(village_id)))
+	var bill: int = Law.fine(village_id)
+	_check(bill > 0, "and there is a price on it", "%d crystals" % bill)
+	_check(Law.fine(village_id) > Law.fine(other_id) or bill == 0,
+		"priced off the rung rather than flat", "%d" % bill)
+	Law.add_crime("assault", village_id, "a test")
+	_check(Law.wanted_at(village_id) == Law.MAX_SEVERITY, "and it stops at the top rung",
+		"%d" % Law.wanted_at(village_id))
+
+	# The cell: a door in the world, the body inside it, and two ways out.
+	Law.severity.clear()
+	Law.add_crime("murder", village_id, "a test")
+	var crystals_before: int = PlayerData.crystals
+	PlayerData.add_crystals(400)
+	var paid: bool = Law.pay_fine(village_id)
+	_check(paid, "a fine can be paid", "%d crystals" % bill)
+	_check(PlayerData.crystals < crystals_before + 400, "and it costs the crystals it says")
+	_check(Law.wanted_at(village_id) == 0, "and the slate is clean",
+		"%s" % Law.label(Law.wanted_at(village_id)))
+
+	Law.add_crime("murder", village_id, "a test")
+	if Law.imprison(village_id):
+		_check(Law.in_prison(), "being caught is a cell, not a menu")
+		_check(Law.jailed_in() == village_id, "in the village that took you")
+		# A cell is a place in the world: the body has to *be* in the village that took it,
+		# or "prison" is a state with nothing behind it.
+		var site: Dictionary = Haven.site(village_id)
+		if not site.is_empty():
+			var centre: Vector3 = site["centre"]
+			_check(Vector2(_player.global_position.x - centre.x,
+				_player.global_position.z - centre.z).length() <= float(site["radius"]),
+				"and the body is in it", "%.0f m from the square" % Vector2(
+					_player.global_position.x - centre.x,
+					_player.global_position.z - centre.z).length())
+		var escaped: bool = Law.break_out()
+		_check(escaped, "and there is a way out that costs something")
+		_check(not Law.in_prison(), "which does put you outside")
+		_check(Law.is_wanted(), "wanted for the escape on top of the crime")
+	else:
+		_check(false, "being caught is a cell, not a menu", "imprison refused")
+
+	# A day without trouble is worth a rung, which is what makes "wait it out" a shape rather
+	# than a stopwatch.
+	var before_day: int = Law.wanted_at(village_id)
+	Law.call("_on_day_passed", 1)
+	_check(Law.wanted_at(village_id) == before_day - 1 or before_day == 0,
+		"a day gone by cools one rung", "%d -> %d" % [before_day, Law.wanted_at(village_id)])
+
+	# It has to survive the session: a crime you can restart out of is not a crime.
+	var saved: Dictionary = Law.save_data()
+	var live: Dictionary = (saved.get("severity", {}) as Dictionary).duplicate(true)
+	Law.reset()
+	_check(not Law.is_wanted(), "and a reset clears it")
+	Law.severity = live
+	_check(Law.wanted_at(village_id) == int(live.get(village_id, 0)),
+		"what the save carries is what the law thinks")
+	Law.severity.clear()
+	_check(not Law.is_wanted(), "the world is left as it was found")
+
+
+## The tower: a hundred floors of *composed* fights, and the two claims that make it a climb.
+##
+## The first is that the fights are a curve and not a wall — a floor is a handful of swings at
+## any depth, and a boss is the only thing that takes a minute. The second is the one that
+## separates a hundred floors from a hundred rooms: nothing resets between them.
+func _test_tower() -> void:
+	_section("The tower")
+	var site: Node = get_tree().get_first_node_in_group("tower_site")
+	_check(site != null, "the tower is standing in the world")
+	_check(Tower.FLOORS == 100, "and it is a hundred floors", "%d" % Tower.FLOORS)
+	_check(Tower.BANDS.size() == 10, "in ten bands", "%d" % Tower.BANDS.size())
+
+	if site != null:
+		# The shell, the plaza and the arena are all built in the tower's own frame, and the
+		# node is what carries them into the world. Left at the origin they stand on the map's
+		# middle — a four-hundred-metre tower over the spawn camp, with an arena the player
+		# cannot jump out of.
+		var base: Vector3 = site.call("base_position")
+		_check(Vector2(base.x, base.z).length() > 60.0, "well out along its road",
+			"%.0f m from the camp" % Vector2(base.x, base.z).length())
+		var shell: Node3D = site.get_node_or_null("Shell") as Node3D
+		if shell != null:
+			var away: float = Vector2(
+				shell.global_position.x - base.x, shell.global_position.z - base.z).length()
+			_check(away < 2.0, "its shell stands over its own base and nowhere else",
+				"%.1f m off the base" % away)
+		_check(Villages.near_site(base.x, base.z, 0.0),
+			"and the world keeps its plain clear")
+
+	# The composition, floor by floor. Deterministic on purpose: a record is only a thing a
+	# player can learn if floor 63 is the same fight every run.
+	var missing: int = 0
+	var bosses: int = 0
+	var plain_band: int = 0
+	var ruled_bands: int = 0
+	var bands_seen: Dictionary = {}
+	for depth in range(1, Tower.FLOORS + 1):
+		var plan: Dictionary = Tower.plan(depth)
+		if String(plan.get("line", "")) == "" or String(plan.get("band_name", "")) == "" \
+				or int(plan.get("count", 0)) <= 0:
+			missing += 1
+		# The first band is the plain stair and has no rule of its own; every band above it
+		# does, which is what makes the climb *change* rather than just get longer.
+		var ruled: bool = String(plan.get("rule", "")) != ""
+		if int(plan["band"]) == 0:
+			if not ruled:
+				plain_band += 1
+		elif ruled:
+			ruled_bands += 1
+		bands_seen[int(plan["band"])] = true
+		if bool(plan["boss"]):
+			bosses += 1
+			if String(plan["boss_name"]) == "":
+				missing += 1
+	_check(missing == 0, "every floor has a line, a band and something standing in it",
+		"%d floors incomplete" % missing)
+	_check(plain_band == 10 and ruled_bands == Tower.FLOORS - 10,
+		"the first ten floors are the plain stair and every band above plays by a rule",
+		"%d plain, %d ruled" % [plain_band, ruled_bands])
+	_check(bands_seen.size() == Tower.BANDS.size(), "and every band is used",
+		"%d of %d" % [bands_seen.size(), Tower.BANDS.size()])
+	_check(bosses == Tower.FLOORS / 10, "a boss every ten floors", "%d" % bosses)
+	_check(Tower.is_boss_floor(10) and not Tower.is_boss_floor(11),
+		"which is the tenth and not the eleventh")
+	_check(Tower.plan(37) == Tower.plan(37), "and the same floor is the same fight every time")
+
+	# The curve. Health in *blows of the player's own fist*, so a floor does not stop being a
+	# fight the moment ATTACK outgrows it — which is the failure the tower exists to avoid.
+	var shallow: float = float(Tower.plan(1)["blows"])
+	var deep: float = float(Tower.plan(60)["blows"])
+	var boss: float = float(Tower.plan(60)["blows"])
+	var shallow_boss: float = float(Tower.plan(10)["blows"])
+	_check(deep > shallow, "the floors get harder as you climb",
+		"%.1f blows at 1, %.1f at 60" % [shallow, deep])
+	_check(deep < 60.0, "but a floor is a fight rather than a wall",
+		"%.0f swings at floor 60" % deep)
+	_check(boss >= deep and shallow_boss > shallow,
+		"and a boss asks more than the floor it sits on",
+		"%.1f against %.1f" % [shallow_boss, shallow])
+	_check(float(Tower.plan(Tower.FLOORS)["blows"]) > deep,
+		"the last boss being the one on top",
+		"%.0f swings at the top against %.0f at 60" % [float(Tower.plan(Tower.FLOORS)["blows"]), deep])
+
+	if site != null:
+		_check(Tower.unlocked() or Tower.locked_reason() != "",
+			"the door either opens or says what it wants")
+		# In and out, on the ground floor, without a fight: the walk is what is under test here.
+		Tower.leave("a test")
+		Tower.enter(false)
+		_check(Tower.inside() and Tower.current == 1, "the door lets you in at the stairhead",
+			"floor %d" % Tower.current)
+		var hp_before: float = float(PlayerData.stats["hp"]["current"])
+		var qi_before: float = float(PlayerData.stats["qi"]["current"])
+		Tower.ascend()
+		_check(Tower.current == 2, "and the stair goes up", "floor %d" % Tower.current)
+		# Nothing resets between floors. No rest, no shelf, no refill: the only healing in the
+		# tower is what you carried in.
+		_check(_near(float(PlayerData.stats["hp"]["current"]), hp_before, 0.001)
+			and _near(float(PlayerData.stats["qi"]["current"]), qi_before, 0.001),
+			"and the stair up is not a rest",
+			"hp %.1f, qi %.1f" % [float(PlayerData.stats["hp"]["current"]),
+				float(PlayerData.stats["qi"]["current"])])
+		_check(Tower.descend() and Tower.current == 1, "and back down again")
+
+		# The record is the deepest floor *cleared*, not the deepest one stood on: a record you
+		# can set by walking into a room is not a record.
+		Tower.deepest = 0
+		Tower.cleared.clear()
+		Tower.ascend()
+		_check(Tower.deepest == 0, "standing on a floor does not take it",
+			"deepest %d, on floor %d" % [Tower.deepest, Tower.current])
+		var first: Dictionary = Tower.clear_floor(Tower.current)
+		_check(Tower.deepest == Tower.current, "clearing one does",
+			"deepest %d" % Tower.deepest)
+		_check(not first.is_empty(), "and the first clear pays")
+		var again: Dictionary = Tower.clear_floor(Tower.current)
+		_check(again.is_empty(), "but only the first time")
+		var deepest_before: int = Tower.deepest
+		Tower.died_inside()
+		_check(not Tower.inside(), "being beaten puts the body outside")
+		_check(Tower.deepest == deepest_before, "and the record stands",
+			"deepest %d" % Tower.deepest)
+		_check(PlayerData.wounds > 0, "at the price of a wound", "%d" % PlayerData.wounds)
+		Tower.leave("a test")
+		PlayerData.clear_wounds()
+
+
+## Day and night, and what the hour actually changes.
+##
+## A clock that only moves the sun is a clock. This one is a *reason to choose an hour*: the
+## zones are faster in the dark, raiders see further and follow longer, and the gates are shut
+## to nobody — they are simply where the watch stands.
+func _test_clock() -> void:
+	_section("Day and night")
+	var start: float = Clock.hour_float()
+	Clock.skip_to_hour(12.0)
+	_check(Clock.phase() == "day", "noon is day", "%s" % Clock.phase())
+	_check(not Clock.is_night(), "and not night")
+	_check(Clock.gates_open(), "and the watch is on its beat")
+	_check(_near(Clock.aggro_share(), 1.0, 0.001) and _near(Clock.leash_share(), 1.0, 0.001),
+		"and the road is the road", "aggro %.2f, leash %.2f" % [Clock.aggro_share(), Clock.leash_share()])
+	var noon_dark: float = Clock.darkness()
+
+	Clock.skip_to_hour(23.0)
+	_check(Clock.is_night(), "midnight is night", "%s" % Clock.phase())
+	_check(not Clock.gates_open(), "and the watch is behind its own fence")
+	_check(Clock.aggro_share() > 1.0, "raiders see further in the dark",
+		"x%.2f" % Clock.aggro_share())
+	_check(Clock.leash_share() > 1.0, "and follow further", "x%.2f" % Clock.leash_share())
+	_check(Clock.zone_share() > 1.0, "and a spirit zone is worth more", "x%.2f" % Clock.zone_share())
+	_check(Clock.darkness() > noon_dark, "and it is darker",
+		"%.2f at noon, %.2f at midnight" % [noon_dark, Clock.darkness()])
+	# Meditating hurries the clock, which is what makes a night of cultivation a *night*.
+	_check(Clock.MEDITATION_TIME_SCALE > 1.0, "an hour of breathing is worth more than an hour",
+		"x%.1f" % Clock.MEDITATION_TIME_SCALE)
+	var saved: Dictionary = Clock.save_data()
+	_check(saved.has("minutes") and saved.has("day"), "the hour is part of the save")
+	Clock.skip_to_hour(start)
+
+
+## The forge: gear *multiplies* what you trained, it never replaces it.
+##
+## The rule is a rule and not a slogan, so it is measured: with the weapon off, a strike is
+## exactly what the body earned; with it on, it is that number times a factor near one. An
+## "+20 ATTACK" sword would have to be re-balanced against every training gain in the game and
+## would make the training pointless — which is the thing this refuses.
+func _test_forge() -> void:
+	_section("The forge")
+	_check(Forge.PIECES.size() >= 3, "the forge has things to make",
+		"%d pieces" % Forge.PIECES.size())
+	_check(Forge.MATERIALS.size() >= 2, "out of materials rather than out of crystals alone",
+		"%d" % Forge.MATERIALS.size())
+
+	var blade: String = ""
+	for piece: Dictionary in Forge.PIECES:
+		if String(piece.get("slot", "")) == "weapon":
+			blade = String(piece["id"])
+			break
+	_check(blade != "", "one of which is a weapon")
+	if blade == "":
+		return
+
+	var unarmed: float = PlayerData.strike_damage()
+	var material: String = String((Forge.MATERIALS.keys())[0])
+	Forge.add_material(material, 6, false)
+	_check(Forge.material_count(material) >= 6, "materials are counted, not guessed",
+		"%d" % Forge.material_count(material))
+	_check(Forge.materials_ready(blade), "and a piece knows what it needs")
+	var owned_before: bool = Forge.owned.has(blade)
+	if not owned_before:
+		var forged: bool = Forge.buy(blade)
+		_check(forged, "a piece can be made from them", "%s" % blade)
+	_check(Forge.tier_of(blade) >= 1, "and it has a tier, which is what its look follows",
+		"%s" % Forge.tier_name(blade))
+	Forge.equip(blade)
+	_check(Forge.equipped_in("weapon") == blade, "and it can be worn")
+	var armed: float = PlayerData.strike_damage()
+	_check(armed > unarmed, "a weapon is worth something",
+		"%.1f against %.1f bare" % [armed, unarmed])
+	_check(armed < unarmed * 2.0, "and it multiplies the body rather than replacing it",
+		"%.2fx" % (armed / maxf(0.01, unarmed)))
+	# The proof of "multiplies": the trained value is still *in* the number, so growing the stat
+	# grows the armed number too. A flat bonus would not.
+	var cap_before: float = PlayerData.get_cap("attack")
+	PlayerData.grant_cap("attack", 30.0)
+	var grown: float = PlayerData.strike_damage()
+	_check(grown > armed, "training still shows through the gear",
+		"%.1f -> %.1f with +30 ATTACK" % [armed, grown])
+	PlayerData.stats["attack"]["cap"] = cap_before
+	_check(_near(PlayerData.strike_damage(), armed, maxf(1.0, armed * 0.25)),
+		"and the test puts the stat back", "%.1f" % PlayerData.strike_damage())
+
+
+## The bounty boards: a contract nobody can collect on is a list of names.
+##
+## The whole trick is that taking one puts an *ordinary raider with a name* into the world at a
+## camp that already exists, and that bringing it down is settled back at the village. So the
+## check is the body: a mark that is taken can be found standing in the world with its own
+## bounty id, and a mark that is brought down can be paid for exactly once.
+func _test_boards() -> void:
+	_section("The boards")
+	Bounties.reset()
+	Bounties.refresh(false)
+	var villages_checked: int = 0
+	var with_slots: int = 0
+	for entry: Dictionary in Villages.all():
+		var village_id: String = String(entry["id"])
+		villages_checked += 1
+		var slots: Array = Bounties.slots(village_id)
+		if slots.size() > 0:
+			with_slots += 1
+		var complete: int = 0
+		for slot: Dictionary in slots:
+			if String(slot["name"]) != "" and String(slot["camp"]) != "" \
+					and int(slot["crystals"]) > 0 and String(slot["material"]) != "":
+				complete += 1
+		_check(complete == slots.size(), "every contract in %s names a target, a camp and a price"
+			% village_id, "%d of %d" % [complete, slots.size()])
+	_check(with_slots == villages_checked, "every village posts contracts",
+		"%d of %d" % [with_slots, villages_checked])
+
+	var board: Array = Bounties.slots(String((Villages.all()[0] as Dictionary)["id"]))
+	if board.is_empty():
+		_check(false, "there is a contract to take", "an empty board")
+		return
+	var contract: Dictionary = board[0]
+	var mark_id: String = String(contract["id"])
+	_check(not bool(contract["taken"]), "a contract starts untaken")
+	var taken: bool = Bounties.take(mark_id)
+	_check(taken, "and can be taken", "%s" % String(contract["name"]))
+	var standing: Array = []
+	for enemy: Node in get_tree().get_nodes_in_group("enemy"):
+		if String(enemy.get("bounty_id")) == mark_id:
+			standing.append(enemy)
+	_check(standing.size() == 1, "taking one puts a body in the world",
+		"%d standing" % standing.size())
+	if not standing.is_empty():
+		var mark: Node3D = standing[0]
+		_check(mark.get_parent() != null, "and it stands at a camp rather than in the file")
+		var camp: Node = mark.get_parent()
+		var name_matches: bool = true
+		for candidate: Dictionary in (get_tree().root.get_node("Main/EnemyCamps") as Node).call("camps"):
+			if (candidate["node"] as Node) == camp and String(candidate["name"]) != String(contract["camp"]):
+				name_matches = false
+		_check(name_matches, "the one the board named")
+		var hp_blows: float = float(contract["hp_blows"])
+		_check(float(mark.get("max_hp")) > PlayerData.strike_damage() * (hp_blows - 0.5),
+			"and it takes the swings the board says it does",
+			"%.0f hp for %.1f blows" % [float(mark.get("max_hp")), hp_blows])
+
+		# Bringing it down is reported, and paying is a separate walk to the village. That
+		# separation is what makes the board a place rather than a counter.
+		var crystals_before: int = PlayerData.crystals
+		var rep_before: int = Villages.rep_of(String(contract["village"]))
+		Bounties.felled(mark_id)
+		_check(bool(Bounties.slot(mark_id)["felled"]), "bringing it down is recorded")
+		_check(PlayerData.crystals == crystals_before,
+			"and pays nothing where you are standing",
+			"%d crystals" % PlayerData.crystals)
+		_check(Bounties.claimable(String(contract["village"])).size() == 1,
+			"but the board it came from is owed")
+		var paid: Array = Bounties.claim(mark_id)
+		_check(not paid.is_empty(), "and settling it is a payout", ", ".join(paid))
+		_check(PlayerData.crystals > crystals_before, "in crystals",
+			"%d -> %d" % [crystals_before, PlayerData.crystals])
+		_check(Villages.rep_of(String(contract["village"])) > rep_before,
+			"and in standing", "%d -> %d" % [rep_before, Villages.rep_of(String(contract["village"]))])
+		_check((Bounties.claim(mark_id) as Array).is_empty(), "and only once",
+			"a second claim paid again")
+
+	# The board refills on a new day, and only with contracts nobody has taken: the ones in
+	# progress are the player's business and not the clock's.
+	var live_before: int = 0
+	for slot: Dictionary in Bounties.slots(String(contract["village"])):
+		if bool(slot["taken"]) and not bool(slot["felled"]):
+			live_before += 1
+	Bounties.refresh(true)
+	var live_after: int = 0
+	for slot: Dictionary in Bounties.slots(String(contract["village"])):
+		if bool(slot["taken"]) and not bool(slot["felled"]):
+			live_after += 1
+	_check(live_after >= live_before, "a new day never cancels a contract in progress",
+		"%d -> %d" % [live_before, live_after])
+
+	Bounties.reset()
+	Bounties.refresh(false)
+
+
+## The one line on screen that says what the valley is currently doing to you.
+##
+## Four systems meet here and none of them is visible anywhere else: which sanctuary you are
+## standing in, which floor of the tower you are on, what the law wants and what it costs, and
+## how many wounds the last fight left. The claim is not that the line is pretty — it is that a
+## player who never opens a panel can see all four.
+func _test_world_state_line() -> void:
+	_section("World state line")
+	if _hud == null or _player == null:
+		return
+	var label: Label = _find_by_name(_hud, "StatusLabel") as Label
+	if label == null:
+		label = _hud.get("_status_label") as Label
+	_check(label != null, "the HUD has a status line")
+	if label == null:
+		return
+	var kept: Vector3 = _player.global_position
+
+	_hud.call("_update_status")
+	_check(label.text.contains(Clock.clock_text()), "which carries the hour",
+		Clock.clock_text())
+
+	# A village: the sanctuary is a fact about the *body's* position, so the body is put in one.
+	var village_id: String = String((Villages.all()[0] as Dictionary)["id"])
+	var site: Dictionary = Haven.site(village_id)
+	if not site.is_empty():
+		var centre: Vector3 = site["centre"]
+		_player.call("warp_to", centre + Vector3(0.0, 1.0, 0.0))
+		await _settle(3)
+		_hud.call("_update_status")
+		var named: bool = label.text.contains(String((Villages.all()[0] as Dictionary)["name"]).to_upper())
+		_check(named, "and names the village the body is standing in",
+			String((Villages.all()[0] as Dictionary)["name"]))
+
+	# The tower: the floor number is the one number in the game that is worth having on screen
+	# while it is true, and it is shown nowhere else.
+	if Tower.unlocked():
+		Tower.enter(true)
+		_hud.call("_update_status")
+		# Named by the tower's own current floor rather than a hardcoded 1: this save may
+		# already be part-way up, and a test that insists on the stairhead would fail for a
+		# reason that has nothing to do with the status line.
+		var wanted: String = "FLOOR %d" % Tower.current
+		_check(label.text.contains(wanted), "and the floor while there is a floor to be on",
+			"%s in %s" % [wanted, Tower.summary()])
+		Tower.leave("a test")
+		_hud.call("_update_status")
+		_check(not label.text.contains("FLOOR "), "and stops saying it on the step outside")
+
+	# The law, at the rung that has a price on it rather than a shut door.
+	Law.severity.clear()
+	Law.add_crime("assault", village_id, "a test")
+	_hud.call("_update_status")
+	_check(label.text.contains("WATCHED") or label.text.contains("HUNTED")
+			or label.text.contains("OUTLAW"), "and says so when a village wants the body",
+		"%s" % Law.label(Law.wanted_at(village_id)))
+	_check(label.text.contains("%d crystals" % Law.fine(village_id)),
+		"with the price of settling it", "%d crystals" % Law.fine(village_id))
+	Law.severity.clear()
+
+	# Wounds, which are the cost of dying and the one thing that changes what the body *is*
+	# rather than what it has.
+	PlayerData.add_wound()
+	_hud.call("_update_status")
+	_check(label.text.contains("wound"), "and counts the wounds",
+		"%d" % PlayerData.wounds)
+	PlayerData.clear_wounds()
+
+	_player.call("warp_to", kept)
+	await _land(_player)
+	_hud.call("_update_status")
+
+
 func _test_people() -> void:
 	_section("The people")
 	var people: Node = get_tree().root.get_node_or_null("Main/People")

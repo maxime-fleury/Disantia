@@ -48,6 +48,9 @@ const COL_UNLOCKED := Color(1, 1, 1, 1)
 const COL_FOUND := Color("cfe8b8")
 ## A champion, when the camp it holds has no colour of its own to wear.
 const COL_CHAMPION := Color("ff9d5c")
+## The tower is the tallest thing in the valley by an order of magnitude, so it gets the one
+## mark that reads as *height* rather than as ground: a spire.
+const COL_TOWER := Color("dce4f2")
 ## A zone you have not reached the stage for still has to be on the map — knowing
 ## something is out there and out of reach is the reason to keep cultivating.
 const LOCKED_ALPHA := 0.42
@@ -144,7 +147,9 @@ func _draw() -> void:
 	_draw_safe_zone()
 	_draw_wards()
 	_draw_zones()
+	_draw_villages()
 	_draw_camps()
+	_draw_tower()
 	_draw_landmarks()
 	_draw_elder()
 	_draw_player()
@@ -239,6 +244,50 @@ func _draw_camps() -> void:
 			draw_polyline(_diamond_points(centre, 5.4, 7.6), Color(tint, 0.45), 1.2)
 		else:
 			_draw_diamond(centre, 5.4, 7.6, tint)
+
+
+## The three villages, drawn as walled places rather than as dots: an outer ring for the
+## palisade and a dot for the square inside it, in the village's own colour. A village is the
+## one kind of place on this map that is *safe*, and the ring is what says so at a glance.
+##
+## A village you are wanted in turns red. The law is per-village — burning a camp in one is not
+## the next one's business — so a single global "wanted" marker would be a lie about the three
+## places it could be about.
+func _draw_villages() -> void:
+	for entry: Dictionary in Villages.all():
+		var village_id: String = String(entry["id"])
+		var site: Dictionary = Haven.site(village_id)
+		if site.is_empty():
+			continue
+		var centre: Vector3 = site["centre"]
+		var at: Vector2 = _to_map(Vector2(centre.x, centre.z))
+		var tint: Color = entry.get("colour", COL_SAFE)
+		var wanted: int = Law.wanted_at(village_id)
+		if wanted > 0:
+			tint = COL_CAMP.lerp(tint, 0.25)
+		var shut: bool = Law.shops_closed(village_id)
+		draw_arc(at, 5.6, 0.0, TAU, 22, Color(tint, 0.9 if not shut else 0.55), 1.5, true)
+		draw_circle(at, 2.2, Color(tint, 0.85))
+		# A tick across the square for the rungs of the ladder: one crime is a mark you can
+		# still walk off, and an outlaw's village is crossed out.
+		if wanted >= 2:
+			draw_line(at - Vector2(3.0, -3.0), at + Vector2(3.0, -3.0), COL_CAMP, 1.4, true)
+
+
+## The tower, as a spire: a triangle and a mast, so it is legible at four pixels and readable
+## as *tall* rather than as another ring on the ground.
+func _draw_tower() -> void:
+	var site: Node = get_tree().get_first_node_in_group("tower_site")
+	if site == null or not site.has_method("base_position"):
+		return
+	var base: Vector3 = site.call("base_position")
+	var at: Vector2 = _to_map(Vector2(base.x, base.z))
+	if Tower.inside():
+		draw_circle(at, 6.4, Color(COL_TOWER, 0.35))
+	draw_line(at - Vector2(0.0, 7.0), at + Vector2(0.0, 1.2), Color(COL_TOWER, 0.85), 1.6, true)
+	draw_colored_polygon(PackedVector2Array([
+		at + Vector2(0.0, -7.4), at + Vector2(-3.4, -1.6), at + Vector2(3.4, -1.6),
+	]), COL_TOWER)
 
 
 ## Sites you have found, and nothing else.
@@ -395,10 +444,27 @@ func legend() -> Array:
 	var site_note: String = ""
 	if counts.y > 0:
 		site_note = "%d of %d found" % [counts.x, counts.y]
+	# One row for the tower and none for the villages. The legend is a column in a panel with a
+	# fixed corner, and every row it gains pushes the panel up into the action panel above it —
+	# a cost the map's own marks do not have. The villages are drawn as rings with squares in
+	# them, which is legible next to the camps' rings, and the tower is the one mark that has to
+	# be *named*: it is where the record is.
+	var wanted_note: String = ""
+	for entry: Dictionary in Villages.all():
+		var village_id: String = String(entry["id"])
+		if Law.wanted_at(village_id) <= 0:
+			continue
+		var owed: int = Law.fine(village_id)
+		wanted_note = "%s wants %d" % [String(entry["name"]), owed]
+		if Law.shops_closed(village_id):
+			wanted_note = "%s is shut to you" % String(entry["name"])
+		break
 	var rows: Array = [
 		{"color": COL_PLAYER, "text": "You", "note": ""},
-		{"color": COL_SAFE, "text": "Camp wards", "note": ""},
+		{"color": COL_SAFE, "text": "Camp wards", "note": wanted_note},
 		{"color": COL_CAMP, "text": "Raider camp", "note": ""},
+		{"color": COL_TOWER, "text": "Village / tower",
+			"note": "%d floors, deepest %d" % [Tower.FLOORS, Tower.deepest]},
 		{"color": COL_ELDER, "text": "The elder", "note": elder_note},
 		{"color": COL_FOUND, "text": "Site you found", "note": site_note},
 	]

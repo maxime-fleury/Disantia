@@ -312,6 +312,15 @@ trance to sit in, no shelf, and the only healing is what you carried in. The way
 open, your best depth is kept, and the crown is the highest thing on the map by an order of
 magnitude — you can see what you have not done yet from thirty metres away.
 
+### One line that says what is happening
+
+Four systems have nothing to do with each other and share a single line at the foot of the
+screen — the sanctuaries, the law, the tower and the clock. Standing in a village names it,
+being on a floor names the floor and its band, being wanted names the rung *and* the sum that
+settles it, and a wound from dying is counted there rather than buried in a panel. Each part
+appears only when it has something true to say: a strip with four permanent segments is a strip
+nobody reads.
+
 ### Day and night
 
 The clock runs at a pace you can watch: the sun's colour and angle, the sky and the fog move

@@ -1029,7 +1029,10 @@ func _build_minimap() -> void:
 	# the colour; the words beside it are only the label.
 	_map_legend = VBoxContainer.new()
 	_map_legend.name = "MapLegend"
-	_map_legend.add_theme_constant_override("separation", 2)
+	# One pixel between rows rather than two. The legend is fifteen rows in a panel anchored to
+	# a fixed corner, so every pixel of gap is multiplied by fifteen and charged to the action
+	# panel above it — which is exactly how a new row here turns into an overlap there.
+	_map_legend.add_theme_constant_override("separation", 1)
 	body.add_child(_map_legend)
 
 	_ignore_mouse(_map_panel)
@@ -2022,6 +2025,10 @@ func _update_status() -> void:
 	var state: String = ""
 	if _player_in_safe_zone():
 		state = "   ·   CAMP WARDS — nothing here will follow you in"
+	# The valley's own states, on the one line that is read at a glance. Order is what matters:
+	# where you are, what is happening to you, and then the hour — a status line that leads with
+	# the clock is a status line that makes the player hunt for the thing that is hunting them.
+	var valley: String = _valley_state()
 	var dash: String = ""
 	if PlayerData.has_ability("dash"):
 		dash = "   ·   DASH ready" if _dash_ready() else "   ·   dash cooling"
@@ -2042,8 +2049,8 @@ func _update_status() -> void:
 	_status_label.text = (
 		"WASD move · Shift run · Space jump · click to strike · Q dash · C cultivate · B break through\n"
 		+ "E talk to the elder · 1/2/3 drill the body · X qi pressure · T recall · Tab settings · V stats\n"
-		+ "%d FPS%s%s%s%s%s" % [Engine.get_frames_per_second(), pointer, state, dash, zone,
-			_attune_state()]
+		+ "%s   ·   %d FPS%s%s%s%s%s%s" % [Clock.clock_text(), Engine.get_frames_per_second(),
+			pointer, state, dash, zone, _attune_state(), valley]
 	)
 	# Trimmed to two lines, and the two lines that stay are the ones that are not said
 	# anywhere else on screen. The rest — the drill keys, the elder, the spirit pillars — is
@@ -2054,6 +2061,59 @@ func _update_status() -> void:
 		+ "Tap 1, 2 or 3 to drill BODY: it costs blood, not qi, and widens your HP cap."
 	)
 	_refresh_pressure()
+
+
+## The world's state as one line: where the body stands, what is on it, and the hour.
+##
+## Four systems that have nothing to do with each other — the sanctuaries, the law, the tower and
+## the clock — and one place on screen where a player can see all of them without opening
+## anything. Each contributes only when it has something true to say, because a status line with
+## four permanent segments is a status line nobody reads.
+func _valley_state() -> String:
+	var parts: Array = []
+	var here: Dictionary = Haven.inside()
+	if not here.is_empty():
+		parts.append("%s — the watch holds this ground" % String(
+			here.get("name", "here")).to_upper())
+	if Tower.inside():
+		var readout: Dictionary = Tower.readout()
+		parts.append("FLOOR %d of %d — %s" % [int(readout.get("depth", 0)),
+			int(readout.get("floors", 0)), String(readout.get("band", ""))])
+	elif Tower.deepest > 0:
+		parts.append("the tower stands at %d" % Tower.deepest)
+	if Law.is_wanted():
+		var caught_in: String = Law.jailed_in()
+		if caught_in == "":
+			caught_in = _worst_wanted_village()
+		if caught_in != "":
+			var owed: int = Law.fine(caught_in)
+			# Both branches take the rung, the village and the sum. The rung is the *label*, not the
+			# word "watched": being hunted and being an outlaw are the same sentence with a louder
+			# first word, and hardcoding one of them here silently cost the line an argument.
+			parts.append(("%s IN %s — %d crystals, or the bars" if Law.in_prison()
+				else "%s IN %s — %d crystals settles it")
+				% [Law.label(Law.wanted_at(caught_in)).to_upper(),
+					String(Villages.def(caught_in).get("name", caught_in)).to_upper(), owed])
+	if PlayerData.wounds > 0:
+		parts.append("%d wound%s — the breath comes short" % [PlayerData.wounds,
+			"" if PlayerData.wounds == 1 else "s"])
+	if parts.is_empty():
+		return ""
+	return "   ·   " + "   ·   ".join(parts)
+
+
+## The village with the most against the body, for the status line. Asked of the law rather
+## than of where the body is standing: being wanted in a place you are nowhere near is still
+## the reason every shelf there is dearer.
+func _worst_wanted_village() -> String:
+	var worst: String = ""
+	var rung: int = 0
+	for entry: Dictionary in Villages.all():
+		var village_id: String = String(entry["id"])
+		if Law.wanted_at(village_id) > rung:
+			rung = Law.wanted_at(village_id)
+			worst = village_id
+	return worst
 
 
 ## The Qi Pressure line: whether the technique exists yet, and if it does, what holding

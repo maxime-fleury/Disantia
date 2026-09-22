@@ -43,8 +43,7 @@ func _ready() -> void:
 	boards = saved.get("boards", {})
 	_filled_day = int(saved.get("filled_day", -1))
 	_next_id = int(saved.get("next_id", 1))
-	if Sky != null:
-		Clock.day_passed.connect(func(_day: int) -> void: refresh(true))
+	Clock.day_passed.connect(func(_day: int) -> void: refresh(true))
 	# The boards are filled on the first frame rather than here: the camps are built by the
 	# scene, and a board that named a camp before the camp existed would post a bounty on
 	# nowhere.

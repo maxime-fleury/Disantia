@@ -268,7 +268,12 @@ var _wards_consumed: bool = false
 const SAVE_MODULES: Dictionary = {
 	"villages": "/root/Villages",
 	"law": "/root/Law",
-	"sky": "/root/Sky",
+	# `sky` is the save file's own name for the clock, kept because the key is what an existing
+	# save was written under — renaming it here would silently drop the hour of every save in
+	# the wild. The *path* is what has to be right, and it was not: the autoload was renamed to
+	# Clock (Godot already has a `Sky` type) and this line went on pointing at a node that never
+	# existed, so no save ever restored the time of day.
+	"sky": "/root/Clock",
 	"tower": "/root/Tower",
 	"forge": "/root/Forge",
 	"bounties": "/root/Bounties",
