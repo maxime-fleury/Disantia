@@ -154,6 +154,11 @@ const RESOURCE_REGEN: Dictionary = {
 	"qi": 0.05,
 }
 
+## DEFENSE xp per point of damage weathered. One number, two teachers: a raider's blow and a
+## rep of physical training both pay it, so a body that only ever drills and a body that only
+## ever gets hit end up tougher by the same arithmetic.
+const DEFENSE_XP_PER_DAMAGE := 0.5
+
 ## Which pools are held at zero once emptied rather than trickling back up.
 ##
 ## Blood, and only blood. An emptied health pool that regenerates is a state nothing can
@@ -357,16 +362,9 @@ func _process(delta: float) -> void:
 		if float(entry["current"]) <= 0.0 and HELD_AT_ZERO.has(id):
 			continue
 		var cap: float = entry["cap"]
-		# Mending is the one rate an attainment changes, and only while nothing has hit you.
-		var rate: float = float(RESOURCE_REGEN[id])
-		if id == "hp":
-			rate *= regen_multiplier()
-		# A charm speeds the breath, a wound slows everything. Applied here rather than
-		# folded into either multiplier because this loop is the only place either rate is
-		# actually used, and a modifier that lives at the point of use cannot be forgotten
-		# by a caller that reads the multiplier for the panel.
-		rate *= gear_regen_share(id) * wound_regen_multiplier()
-		entry["current"] = minf(cap, float(entry["current"]) + cap * rate * delta)
+		# One door for the whole rate, so the number this loop applies and the number
+		# anything else reasons about (the qi cripple's tempo) cannot drift apart.
+		entry["current"] = minf(cap, float(entry["current"]) + regen_per_second(id) * delta)
 	_autosave(delta)
 
 
@@ -1196,6 +1194,35 @@ func restore_all() -> void:
 	log_message.emit("Vitality and qi fully restored.", "gain")
 
 
+## The DEFENSE that comes from being hurt, whatever hurt you.
+##
+## A raider's fist and a set of pushups are the same lesson taught by different teachers, and
+## they were not: blood spent in a drill bought BODY and nothing else, so the one place a
+## player deliberately pays in health was the one place a trained hide did not accrue. The
+## share lives here rather than in each caller because two copies of 0.5 is how the two paths
+## come to disagree about what a point of blood is worth.
+func gain_defense_from(dealt: float) -> void:
+	if dealt <= 0.0:
+		return
+	gain("defense", dealt * DEFENSE_XP_PER_DAMAGE)
+
+
+## Points of a resource this body takes back per second, right now.
+##
+## The passive rate, with everything that modifies it already folded in: Mending for blood,
+## a charm for breath, a wound against both. Public rather than private because a *deeper
+## pool is a faster body* is a rule more than one system needs — see `training.gd`, whose
+## qi cripple paces itself off exactly this figure.
+func regen_per_second(stat_id: String) -> float:
+	if not RESOURCE_REGEN.has(stat_id):
+		return 0.0
+	var rate: float = float(RESOURCE_REGEN[stat_id])
+	if stat_id == "hp":
+		rate *= regen_multiplier()
+	rate *= gear_regen_share(stat_id) * wound_regen_multiplier()
+	return get_cap(stat_id) * rate
+
+
 ## DEFENSE softens incoming damage on a curve that never reaches immunity.
 func damage_multiplier() -> float:
 	return 100.0 / (100.0 + get_cap("defense"))
@@ -1252,7 +1279,7 @@ func apply_damage(raw: float, kind: String = "blow") -> float:
 		stats_changed.emit()
 		return dealt
 	gain("hp", dealt * 2.0)
-	gain("defense", dealt * 0.5)
+	gain_defense_from(dealt)
 	# Training your endurance must not undo the very blow that trained it. A big
 	# hit can push the HP cap over a threshold, and a growing resource cap tops
 	# `current` up — which would otherwise revive a body this same call emptied.

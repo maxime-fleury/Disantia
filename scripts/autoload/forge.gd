@@ -86,6 +86,18 @@ const PIECES: Array = [
 		"id": "peak_seal", "name": "Peak Seal", "slot": "charm", "at": "towerfall",
 		"base": 260, "material": "iron_heart", "blurb": "A seal from the Storm Peak, worn as a claim.",
 	},
+	{
+		# The one piece that makes no number bigger. A night in this valley is a real night —
+		# the light goes, the raiders see further and the raids only ever land in the dark — and
+		# the honest answer to it used to be a fire and a wait. Its tiers are the *lit radius*
+		# rather than a share of anything the body trained, which is why it lives here and not
+		# on the elder's shelf: buying it is a purchase, upgrading it is a reason to walk to
+		# the smith, and carrying it changes what the player can do at an hour rather than in a
+		# fight. See `scripts/player/lantern.gd` for what the tiers are worth.
+		"id": "traveller_lamp", "name": "Traveller's Lamp", "slot": "lamp", "at": "hollowmere",
+		"base": 24, "material": "spirit_dust",
+		"blurb": "A hooded lamp on a belt hook. It lights the road, not the fight.",
+	},
 ]
 
 ## Roman-ish tier names, so an upgraded piece says what it is without a number.

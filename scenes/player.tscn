@@ -1,4 +1,4 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene load_steps=11 format=3]
 
 [ext_resource type="Script" path="res://scripts/player/player_controller.gd" id="1_player"]
 [ext_resource type="Script" path="res://scripts/player/camera_rig.gd" id="2_camera"]
@@ -8,6 +8,7 @@
 [ext_resource type="Script" path="res://scripts/player/striker.gd" id="6_striker"]
 [ext_resource type="Script" path="res://scripts/ui/avatar_overlay.gd" id="7_overlay"]
 [ext_resource type="Script" path="res://scripts/player/qi_pressure.gd" id="8_pressure"]
+[ext_resource type="Script" path="res://scripts/player/lantern.gd" id="9_lantern"]
 
 [sub_resource type="CapsuleShape3D" id="Shape_body"]
 radius = 0.35
@@ -33,6 +34,12 @@ script = ExtResource("6_striker")
 
 [node name="QiPressure" type="Node3D" parent="."]
 script = ExtResource("8_pressure")
+
+[node name="Lantern" type="Node3D" parent="."]
+; The lamp the traders sell. Its light is built in code rather than in this file because its reach
+; is decided by the forge tier of the worn piece, and a range baked into the scene is a range
+; that has to be edited in two places every time a tier is retuned.
+script = ExtResource("9_lantern")
 
 [node name="Overlay" type="Node3D" parent="."]
 script = ExtResource("7_overlay")

@@ -173,7 +173,11 @@ func _run() -> void:
 	_test_hud()
 	_test_meters()
 	await _test_stats_panel()
+	await _test_qi_cripple()
 	await _test_map()
+	# Before the save round trip, like everything else that spends crystals: this section buys a
+	# lamp and takes it to the anvil, and it puts both back afterwards.
+	await _test_lantern()
 	_test_hud_focus()
 	await _test_settings_modal()
 	await _test_hud_intro()
@@ -693,8 +697,7 @@ func _test_hud() -> void:
 		_check(rows.get_child_count() == PlayerData.STAT_ORDER.size(), "one row per stat",
 			"%d rows" % rows.get_child_count())
 
-	var sliders: Array[HSlider] = []
-	_collect_sliders(_hud, sliders)
+	var sliders: Array[HSlider] = _cap_sliders(_hud)
 	_check(sliders.size() == 2, "speed and jump sliders built", "%d sliders" % sliders.size())
 	if sliders.size() == 2:
 		var caps: Array = [PlayerData.get_cap("speed"), PlayerData.get_cap("jump")]
@@ -709,6 +712,21 @@ func _test_hud() -> void:
 
 	var log_text: RichTextLabel = _hud.get_node_or_null("HudRoot/LogPanel/LogText")
 	_check(log_text != null and log_text.text.length() > 0, "event log is receiving messages")
+
+
+## The training clamps, by name. Filtered rather than collected blindly: the settings panel also
+## holds the voice trim, which is an HSlider and not a cap — and a test that counts sliders now
+## fails the day somebody adds a third one, which is a fact about the panel rather than about
+## the clamps.
+func _cap_sliders(root: Node) -> Array[HSlider]:
+	var all: Array[HSlider] = []
+	if root != null:
+		_collect_sliders(root, all)
+	var out: Array[HSlider] = []
+	for slider in all:
+		if String(slider.name).ends_with("Slider"):
+			out.append(slider)
+	return out
 
 
 func _collect_sliders(node: Node, out: Array[HSlider]) -> void:
@@ -2033,6 +2051,14 @@ func _tap_action(action: String) -> void:
 	await get_tree().physics_frame
 
 
+## Two taps of the jump key, close enough together to be one gesture. Two frames apart rather
+## than one, because a press and a release inside the same frame is not something a hand can
+## do and the engine reads it as a single frame of input.
+func _double_tap_jump() -> void:
+	await _tap_action("jump")
+	await _tap_action("jump")
+
+
 ## Taps until the trance takes, and reports how many taps that needed.
 ##
 ## Entry requires the body to be on the floor on the exact frame the press lands, and
@@ -2932,6 +2958,8 @@ func _test_training_and_strike() -> void:
 	var body_before: float = PlayerData.get_cap("body")
 	var hp_cap_before: float = PlayerData.get_cap("hp")
 	var qi_before: float = PlayerData.get_value("qi")
+	var defense_before: float = float(PlayerData.stats["defense"]["progress"])
+	var defense_cap_before: float = PlayerData.get_cap("defense")
 	# The drills are toggles now, not holds, and that is worth asserting rather than
 	# assuming: the whole point of the change is that the keys come free the moment a
 	# set starts, so a set that quietly ended when the key came up would look exactly
@@ -2963,6 +2991,16 @@ func _test_training_and_strike() -> void:
 	_check(PlayerData.get_value("qi") >= qi_before - 0.05,
 		"and costs no qi at all, which is what makes it the other half of the loop",
 		"qi %.1f -> %.1f" % [qi_before, PlayerData.get_value("qi")])
+	# And the blood it costs is blood: a drill is damage, and damage is what thickens the skin,
+	# exactly as it is when a raider lands one. This is the check that would have caught the
+	# old shape, where the one place a player deliberately pays in health was the one place a
+	# trained hide did not accrue.
+	_check(float(PlayerData.stats["defense"]["progress"]) > defense_before
+			or PlayerData.get_cap("defense") > defense_cap_before,
+		"and the blood a set costs trains DEFENSE, the way a blow does",
+		"banked %.2f -> %.2f, cap %.2f -> %.2f" % [
+			defense_before, float(PlayerData.stats["defense"]["progress"]),
+			defense_cap_before, PlayerData.get_cap("defense")])
 
 	# Rooted, like a trance: a drill must not double as a way to run about.
 	var standing: Vector3 = (_player as Node3D).global_position
@@ -2971,13 +3009,10 @@ func _test_training_and_strike() -> void:
 	var drifted: float = standing.distance_to((_player as Node3D).global_position)
 	_check(drifted < 0.5, "a drilling body cannot run off mid-set", "moved %.2f m" % drifted)
 	Input.action_release("move_forward")
-	# A different drill key switches straight to it rather than refusing, because the
-	# player pressing 2 mid-set means "squats now", not "stop, then press 2".
-	await _tap_action("train_squats")
-	await _settle(4)
-	_check(Training.active == "squats", "a different drill key switches straight to it",
-		Training.active)
-	await _tap_action("train_squats")
+	# The key is a toggle: the same press that started the set ends it. Read as one gesture
+	# rather than two, because a set is dozens of reps over the better part of a minute and a
+	# key that has to be held for all of it is a key that takes the HUD away while it runs.
+	await _tap_action("train_pushups")
 	await _settle(4)
 	_check(not Training.is_training(), "and tapping the same key again ends the set")
 	await _settle(2)
@@ -3044,6 +3079,183 @@ func _test_training_and_strike() -> void:
 	_release_game_input()
 
 
+## The lamp: the only thing in the game that changes what the player can see.
+##
+## Four claims, and the last is the one worth the machinery — the light is the *forge tier* and
+## nothing else, so "upgrade the lamp" is a thing that happens in the world rather than a number
+## that moves in a panel. It is checked through the tables the shelf and the anvil read, because a
+## lamp nobody sells is a lamp nobody can own, and a lamp an upgrade does not reach is a piece of
+## gear that stops existing the moment it is bought.
+func _test_lantern() -> void:
+	_section("The lamp")
+	if _player == null:
+		return
+	var lantern: Node3D = (_player as Node3D).get_node_or_null("Lantern") as Node3D
+	_check(lantern != null, "the body carries a lamp")
+	if lantern == null:
+		return
+	var light: OmniLight3D = lantern.get_node_or_null("Lamp") as OmniLight3D
+	_check(light != null, "and there is a light in it")
+	if light == null:
+		return
+
+	var piece: Dictionary = Forge.def("traveller_lamp")
+	_check(not piece.is_empty(), "it is a piece in the forge's catalogue")
+	if piece.is_empty():
+		return
+	_check(String(piece["slot"]) == "lamp", "on a slot of its own", String(piece["slot"]))
+	var listed: bool = false
+	for entry: Dictionary in (Forge.stock_here("hollowmere")["pieces"] as Array):
+		if String(entry["id"]) == "traveller_lamp":
+			listed = true
+	_check(listed, "and the traders at the home village are the ones who sell it")
+
+	# Saved and put back: this section owns crystals, materials, the hour and the gear.
+	var owned: Dictionary = Forge.owned.duplicate()
+	var equipped: Dictionary = Forge.equipped.duplicate()
+	var crystals: int = PlayerData.crystals
+	var dust: int = Forge.material_count("spirit_dust")
+	var hour: float = Clock.hour_float()
+
+	Forge.owned.erase("traveller_lamp")
+	Forge.equipped.erase("lamp")
+	Clock.skip_to_hour(0.5)
+	await _settle(3)
+	_check(not bool(lantern.call("is_lit")),
+		"a lamp nobody has bought is dark at midnight")
+	_check(not light.visible, "with nothing burning in it")
+
+	Forge.owned["traveller_lamp"] = 1
+	Forge.equip("traveller_lamp")
+	await _settle(3)
+	_check(bool(lantern.call("is_lit")), "bought and worn, it burns in the dark")
+	_check(is_zero_approx(float(lantern.call("reach")))
+			or is_equal_approx(light.omni_range, float(lantern.call("reach"))),
+		"and it reaches exactly as far as its tier says",
+		"%.1f m of light for tier %d" % [light.omni_range, Forge.tier_of("traveller_lamp")])
+	var tier_one: float = float(lantern.call("radius_for_tier", 1))
+
+	# The anvil. Driven through `Forge.upgrade`, which is what the smith's panel calls, so the
+	# shelf, the anvil and the light are checked as one path rather than three.
+	PlayerData.crystals = crystals + 9999
+	Forge.add_material("spirit_dust", 99, false)
+	_check(Forge.upgrade("traveller_lamp"), "the smith takes it further",
+		"tier %d" % Forge.tier_of("traveller_lamp"))
+	await _settle(3)
+	_check(Forge.tier_of("traveller_lamp") > 1, "and it comes off the anvil a rank better")
+	_check(float(lantern.call("reach")) > tier_one,
+		"with a wider circle of road than the plain one",
+		"%.1f m against %.1f m" % [float(lantern.call("reach")), tier_one])
+	_check(is_equal_approx(light.omni_range, float(lantern.call("reach"))),
+		"and the light is the one doing the reaching",
+		"%.1f m in the scene, %.1f m in the table" % [light.omni_range, float(lantern.call("reach"))])
+
+	Clock.skip_to_hour(12.0)
+	await _settle(3)
+	_check(not bool(lantern.call("is_lit")), "and it goes out at noon, which is what makes it a lamp")
+
+	Clock.skip_to_hour(hour)
+	Forge.owned = owned
+	Forge.equipped = equipped
+	PlayerData.crystals = crystals
+	Forge.materials["spirit_dust"] = dust
+	Forge.changed.emit()
+	await _settle(2)
+
+
+## The one drill's identity changes with the pool, and that is the point of having one.
+##
+## Three physical exercises were three ways of paying the same blood for the same attribute, so
+## the catalogue is a single slot: pushups until the dantian can hold a shell of breath, the qi
+## cripple after — a drill that spends breath as well as blood and paces itself off what the body
+## takes back per second. Two things have to be true for that to be a system rather than a
+## relabelling, and both are checked here: the slot is *never empty* (a player who lost their
+## only way to widen BODY on the day they got stronger would have been better off weaker), and
+## the cripple really is paid for in qi at every depth — including exactly at the unlock, where
+## a share that did not move with the tempo would make it self-financing and free.
+func _test_qi_cripple() -> void:
+	_section("The qi cripple")
+	if _player == null:
+		return
+	_release_game_input()
+	Training.stop()
+	var saved_cap: float = PlayerData.get_cap("qi")
+	var unlock: float = float(Training.PRESSURE.UNLOCK_QI)
+
+	# Under the unlock: one drill, done from the outside, and it costs no breath at all.
+	_set_cap("qi", unlock - 40.0)
+	PlayerData.restore_all()
+	_check(not Training.cripple_unlocked(), "under the unlock the work is done from outside")
+	var shallow: Array = Training.catalogue_ids()
+	_check(shallow.size() == 1 and String(shallow[0]) == "pushups",
+		"and the slot runs pushups", str(shallow))
+	_check(not Training.start("qi_cripple"), "the cripple cannot be started yet")
+	Training.stop()
+
+	# At the unlock it takes the slot — and the slot is still one wide.
+	_set_cap("qi", unlock)
+	PlayerData.restore_all()
+	_check(Training.cripple_unlocked(), "a pool of four dantians unlocks the cripple")
+	var deep: Array = Training.catalogue_ids()
+	_check(deep.size() == 1 and String(deep[0]) == "qi_cripple",
+		"and it takes the single slot rather than being added beside it", str(deep))
+
+	var ground: Vector3 = _flat_ground_near(_player as Node3D)
+	(_player as Node3D).call("warp_to", ground)
+	await _settle(4)
+	PlayerData.restore_all()
+
+	# A set of it, driven through the key the player presses. The key is a *slot*: it says "the
+	# body's drill", and the body's drill is the cripple now.
+	var qi_before: float = PlayerData.get_value("qi")
+	var xp_before: float = float(PlayerData.stats["qi"]["progress"])
+	var cap_before: float = PlayerData.get_cap("qi")
+	await _tap_action("train_pushups")
+	await _settle(4)
+	_check(Training.active == "qi_cripple",
+		"the drill key runs the cripple once the pool is deep enough", Training.active)
+	if Training.active != "qi_cripple":
+		_set_cap("qi", saved_cap)
+		PlayerData.restore_all()
+		return
+	await _settle(150)
+	_check(Training.reps > 0, "and the reps come", "%d reps" % Training.reps)
+	_check(PlayerData.get_value("qi") < qi_before,
+		"and the set is paid for in breath, at the unlock where it is easiest to get wrong",
+		"%.1f -> %.1f" % [qi_before, PlayerData.get_value("qi")])
+	_check(float(PlayerData.stats["qi"]["progress"]) > xp_before
+			or PlayerData.get_cap("qi") > cap_before,
+		"and it banks QI toward the next rank",
+		"banked %.2f -> %.2f" % [xp_before, float(PlayerData.stats["qi"]["progress"])])
+	_check(PlayerData.get_value("hp") < PlayerData.get_cap("hp"),
+		"while still costing blood, which is what keeps BODY in the set",
+		"hp %.1f / %.1f" % [PlayerData.get_value("hp"), PlayerData.get_cap("hp")])
+	Training.stop()
+	await _settle(2)
+
+	# The reward for the pool the drill spends: a deeper dantian is a faster body. Measured as
+	# *reps per second through the rep clock the tick actually reads* rather than as the tempo
+	# multiplier, because the tempo is an internal figure and the rate is the thing the player
+	# watches — a mutation that stopped `seconds_per_rep` consulting it at all left the tempo
+	# looking perfectly healthy.
+	_set_cap("qi", 210.0)
+	PlayerData.restore_all()
+	var slow: float = 1.0 / Training.seconds_per_rep("qi_cripple")
+	_set_cap("qi", 1600.0)
+	PlayerData.restore_all()
+	var fast: float = 1.0 / Training.seconds_per_rep("qi_cripple")
+	_check(fast > slow * 1.05, "a deeper pool drills faster than a shallow one",
+		"%.2f reps a second at 1600 against %.2f at 210" % [fast, slow])
+	_check(Training.qi_per_second("qi_cripple") > PlayerData.regen_per_second("qi"),
+		"and it is still a net drain at that depth, not a way to stand still",
+		"%.0f QI/s against %.0f QI/s" % [Training.qi_per_second("qi_cripple"),
+			PlayerData.regen_per_second("qi")])
+
+	_set_cap("qi", saved_cap)
+	PlayerData.restore_all()
+	_release_game_input()
+
+
 ## The settings panel is the only route to the sliders now, so it has to exist,
 ## start hidden, hold both clamps, and offer an aura per catalogue entry with the
 ## unearned ones genuinely locked.
@@ -3059,10 +3271,29 @@ func _test_settings_modal() -> void:
 	_check(_hud.has_method("open_settings") and _hud.has_method("settings_open"),
 		"the HUD can open and report it")
 
-	var sliders: Array[HSlider] = []
-	_collect_sliders(_find_by_name(_hud, "SettingsPanel"), sliders)
+	var sliders: Array[HSlider] = _cap_sliders(_find_by_name(_hud, "SettingsPanel"))
 	_check(sliders.size() == 2, "both clamps live inside the modal now",
 		"%d sliders" % sliders.size())
+
+	# The voice trim, which is the one slider in the panel that is *not* a cap. Counted by name
+	# rather than by position, because the panel is a column and a trim that silently landed in
+	# the training section would still be an HSlider with a plausible value on it.
+	var trim: HSlider = _find_by_name(_hud, "VoiceVolume") as HSlider
+	_check(trim != null, "the settings panel carries a voice volume")
+	if trim != null:
+		_check(is_equal_approx(trim.value, Voice.volume),
+			"showing the level in force", "%.2f on the bar, %.2f in the mix" % [trim.value, Voice.volume])
+		# Driven through the signal the panel wires, which is what a drag on the bar does.
+		var kept: float = Voice.volume
+		trim.value = 0.35
+		await _settle(2)
+		_check(is_equal_approx(Voice.volume, 0.35) or not is_equal_approx(kept, 0.35),
+			"and dragging it sets the mix", "%.2f" % Voice.volume)
+		var readout: Label = _find_by_name(_hud, "VoiceVolumeReadout") as Label
+		_check(readout != null and readout.text.contains("35"),
+			"with the number spelled out", readout.text if readout != null else "no readout")
+		trim.value = kept
+		await _settle(2)
 
 	var grid: GridContainer = _find_by_name(_hud, "AuraGrid") as GridContainer
 	_check(grid != null, "the aura picker was built")
@@ -6169,44 +6400,82 @@ func _test_qi_arts() -> void:
 	PlayerData.restore_all()
 	_check(PlayerData.has_effect("flight"), "four times the dantian buys Cloud Step")
 
+	# A body with air jumps to spend, so the two gestures have something to fight over. This is
+	# the whole reason the technique is a *toggle*: held, every air press became a hover and the
+	# second jump the shop sells was unreachable the moment the art was learned — a movement verb
+	# taken away and a mode handed back.
+	var jumps_saved: int = PlayerData.air_jumps()
+	PlayerData.unlock_ability("air_jumps", 2)
+	_set_cap("qi", 400.0)
+	PlayerData.restore_all()
+
 	var ground: Vector3 = _flat_ground_near(_player as Node3D)
 	(_player as Node3D).call("warp_to", ground + Vector3(0.0, 3.0, 0.0))
 	await _settle(3)
 	# Without the key down first, because a body standing on qi is what is being measured and
 	# a body falling from three metres is not.
 	_check(not bool(_player.call("is_flying")), "falling is still falling")
+
+	# One tap in the air is a jump, not a cloud. Before the change this was the failure: the
+	# tap was swallowed by the hover and the body never kicked off the air at all.
+	# Fourteen frames first, because landing grants coyote time and the warp above happened
+	# standing on the ground: a tap inside that window is a *ground* jump, which is a different
+	# verb from the one being measured.
+	await _settle(14)
+	var jumps_before: int = int(_player.call("air_jumps_left"))
+	await _tap_action("jump")
+	await _settle(2)
+	_check(not bool(_player.call("is_flying")), "one tap in the air is not a cloud")
+	_check(int(_player.call("air_jumps_left")) < jumps_before,
+		"and it is still the air jump it always was",
+		"%d jumps left of %d" % [int(_player.call("air_jumps_left")), jumps_before])
+
+	# A pause first, longer than the gesture's own window: two presses half a minute apart are not
+	# a double tap, and without this the tap above would be read as the first half of one.
+	await _settle(25)
+	# Two taps, and the cloud takes. The second tap of the pair is the gesture; the first is the
+	# air jump the shop taught, which is what the double tap reads as from the outside.
 	var height_before: float = (_player as Node3D).global_position.y
-	Input.action_press("jump")
+	await _double_tap_jump()
 	await _settle(30)
 	var flying: bool = bool(_player.call("is_flying"))
 	var climbed: float = (_player as Node3D).global_position.y - height_before
-	_check(flying, "holding jump in the air holds the body up")
+	_check(flying, "two taps of the jump key put the body on the cloud")
 	_check(climbed > 0.3, "and it climbs rather than sinking",
 		"%.2f m in half a second" % climbed)
 	# The price, over real frames, against the same pool measured with the technique down.
 	# Both halves are taken because a drain smaller than the passive regeneration would read
 	# as "paid for" while costing nothing at all.
 	var with_flight: float = await _measure_qi_rate(90)
-	_check(with_flight < -2.0, "and the pool is being spent the whole time it is held",
+	_check(with_flight < -2.0, "and the pool is being spent the whole time it is up",
 		"%.1f QI/s net" % with_flight)
-	# The ceiling. The ward fences are seventeen metres and a body that could step over one
-	# would sell the path of rings, the champions and the spirit zones for a held key — so
-	# the limit is the ward, not the sky, and it is measured from the ground under the body.
-	await _settle(180)
+	_check(bool(_player.call("is_flying")), "and it is still up a second and a half later")
+
+	# The ceiling. Warped to just under it rather than climbed to, because the ceiling is a clamp
+	# and a clamp can be measured where it bites: a body that has learned to fly is not meant to
+	# leave the map, and it is measured from the ground under it rather than from a height in the
+	# world, so it follows the country.
+	(_player as Node3D).call("warp_to", Vector3(ground.x, ground.y + 24.0, ground.z))
+	await _settle(90)
 	var above: float = (_player as Node3D).global_position.y - ground.y
-	_check(bool(_player.call("is_flying")), "it is still up after three seconds of holding")
-	_check(above <= 9.4, "and it stops nine metres over the ground, under the ward fences",
+	_check(above <= 26.4, "and the sky holds it under the ceiling rather than off the map",
 		"%.1f m" % above)
-	Input.action_release("jump")
-	await _settle(2)
-	_check(not bool(_player.call("is_flying")), "letting go ends it")
+	_check(above > 18.0, "which is clear of the twenty-metre jump cap", "%.1f m" % above)
+
+	# Two taps again let it go, and the key itself was never held: that is what makes this a
+	# technique the player is *in* rather than a button they are pressing.
+	await _double_tap_jump()
+	await _settle(3)
+	_check(not bool(_player.call("is_flying")), "two taps again let it go")
+	(_player as Node3D).call("warp_to", ground + Vector3(0.0, 1.2, 0.0))
 	await _land(_player)
 	var free_fall: float = await _measure_qi_rate(60)
-	print("  info  net qi aloft %.1f/s against %.1f/s with the key up" % [with_flight, free_fall])
+	print("  info  net qi aloft %.1f/s against %.1f/s with the cloud down" % [with_flight, free_fall])
 	_check(free_fall > with_flight + 5.0,
 		"and the pool is measurably better off with the technique down",
 		"%.1f against %.1f QI/s" % [free_fall, with_flight])
 
+	PlayerData.unlock_ability("air_jumps", jumps_saved)
 	_set_cap("qi", saved_cap)
 	PlayerData.restore_all()
 
@@ -6779,6 +7048,25 @@ func _test_tower_door() -> void:
 	_check(door != null, "the tower has a door to stand at")
 	if door == null:
 		return
+	# The doorway's own facing, against the direction it sits in from the middle of the tower. A
+	# slab laid *across* the radius is a fin nailed to the wall rather than a hole in it, and it is
+	# how the door looked from the road: a quarter turn from where it belongs.
+	var outward: Vector3 = door.global_position - (site as Node3D).global_position
+	outward.y = 0.0
+	outward = outward.normalized()
+	var facing: Vector3 = door.global_transform.basis.z
+	facing.y = 0.0
+	facing = facing.normalized()
+	_check(facing.dot(outward) > 0.9, "and it faces outward rather than across the wall",
+		"%.2f between its own front and the road" % facing.dot(outward))
+	# And the key only answers *at* the door. Measured from the middle of the tower it answered
+	# anywhere in its footprint — which is how pressing E behind the wall let a body in.
+	_check(not bool(site.call("at_door", (site as Node3D).global_position)),
+		"the key does not answer from the middle of the tower")
+	_check(not bool(site.call("at_door", door.global_position - outward * 2.5)),
+		"nor from inside the wall behind it")
+	_check(bool(site.call("at_door", door.global_position + outward * 2.0)),
+		"and it answers on the step in front of it")
 	# Stand where a player stands: on the ground outside the door, not at its centre height.
 	var outside: Vector3 = door.global_position
 	outside.y = float(_terrain.call("surface_height_at", outside.x, outside.z)) + 0.6
@@ -6965,6 +7253,14 @@ func _test_voice() -> void:
 	_check(int(summary["english"]) == int(summary["lines"]),
 		"and every line has an English take, because English is the written language",
 		"%d of %d" % [summary["english"], summary["lines"]])
+	# Every one of them in French as well. This is the check that would have caught the tool's own
+	# bug, which was the real reason for "il manque des voix francaises": the French table is
+	# written in two shapes — a row on one line, and a row whose value is carried onto the next —
+	# and the reader only understood the first. A third of the table was invisible to it, so every
+	# long line was silently never dubbed, and nothing said so.
+	_check(int(summary["french"]) == int(summary["lines"]),
+		"and every line is dubbed in French as well",
+		"%d of %d" % [summary["french"], summary["lines"]])
 
 	# Every path in the table, followed. A generated table is a list of filenames, and the whole
 	# failure mode of a list of filenames is one of them not being there.
@@ -6981,6 +7277,58 @@ func _test_voice() -> void:
 		"%d of %d missing, first %s" % [missing.size(), takes, missing[0] if missing else "-"])
 	_check(takes > int(summary["lines"]), "with some lines recorded in both languages",
 		"%d takes for %d lines" % [takes, summary["lines"]])
+
+	# The fixed halves of the sentences with numbers in them, which is the only way the dynamic
+	# half of the game's prose can be heard at all: `Took 12.4 damage.` is a different sentence
+	# every time it is printed, and `The lamp takes.` is not.
+	_check(int(summary["phrases"]) >= 12, "the fixed halves of the numbered lines are recorded",
+		"%d phrases, %d of them in French" % [summary["phrases"], summary["phrase_french"]])
+	var numbered: String = "The lamp takes. 7 metres of road."
+	_check(Voice.phrase_in(numbered) == "The lamp takes.",
+		"and a numbered line finds the longest fixed half inside it", Voice.phrase_in(numbered))
+	_check(Voice.speak_phrase(numbered), "which can then be said on its own")
+
+	# The cries, which are said rather than printed and so are not in the prose tables at all.
+	_check(int(summary["shouts"]) >= 6, "the watch and the raiders have something to shout",
+		"%d cries, %d of them in French" % [summary["shouts"], summary["shout_french"]])
+	_check(int(summary["shout_english"]) == int(summary["shouts"]),
+		"every one of them with an English take",
+		"%d of %d" % [summary["shout_english"], summary["shouts"]])
+	# The cry is taken from the file that shouts it rather than typed out here: a test that
+	# copies the sentence is a test that keeps passing while the shout it checks gets reworded.
+	var cry: String = String(preload("res://scripts/world/guard.gd").SHOUT_HALT)
+	_check(Voice.shout(cry), "and one can be said", cry)
+	_check(not Voice.shout("Something nobody ever recorded."),
+		"while a cry nobody recorded is a no rather than an error")
+
+	# The door the *dynamic* half comes through: the log. Said on the key, because a player who
+	# turned the voices on should not have to be told that the fight they are in is silent.
+	Voice.set_enabled(true)
+	Voice.stop()
+	# Real seconds rather than frames. The gap between two spoken log lines is measured on the wall
+	# clock — deliberately, because it exists to keep a fight from becoming a monologue and a fight
+	# is not measured in frames — so a loop of frames would be over long before the rule was. The
+	# suite has been printing log lines all the way here; this is the wait that lets the next one
+	# be heard.
+	var waited: float = 0.0
+	while Voice.seconds_since_log() < Voice.LOG_GAP_SECONDS + 0.3 and waited < 8.0:
+		await get_tree().create_timer(0.2).timeout
+		waited += 0.2
+	PlayerData.log_message.emit(numbered, "info")
+	await _settle(1)
+	_check(String(Voice.summary()["saying"]) == "The lamp takes.",
+		"and the log says the fixed half of what it prints",
+		String(Voice.summary()["saying"]))
+	# Then quiet: half of what the log prints is a consequence of the other half, and reading all of
+	# it out turns a fight into a monologue. The claim is about *this* line rather than about the
+	# mixer, because the valley is allowed to shout something over the top of it — that is what a
+	# cry is for — and "Took damage" is not.
+	PlayerData.log_message.emit("The ward holds you back.", "damage")
+	await _settle(2)
+	_check(String(Voice.summary()["saying"]) != "The ward holds you back.",
+		"and keeps quiet rather than talking over itself within the second",
+		String(Voice.summary()["saying"]))
+	Voice.stop()
 
 	# A line with no recording is silent and says so, rather than throwing or playing nothing at
 	# the volume of a mistake. Most of what the game prints is dynamic and will never be recorded.
@@ -7023,8 +7371,12 @@ func _test_voice() -> void:
 			"and the line on the band is the line being said", String(Voice.summary()["saying"]))
 	Story.close()
 	await _settle(2)
-	_check(not Voice.is_playing() or Voice.summary()["saying"] == "",
-		"stepping away stops the voice")
+	# Asked of the *line* rather than of the mixer. The same player can be in a conversation and in
+	# a fight at once — a guard shouting, a wound closing, the log saying the fixed half of it — and
+	# the claim here is that walking away from a sentence stops that sentence, not that nothing else
+	# in the valley is allowed to have a voice at the same time.
+	_check(not Voice.is_saying_a_line(),
+		"stepping away stops the voice", String(Voice.summary()["saying"]))
 
 	# Off is off, and it is remembered: a player who does not want to be read to should not have to
 	# say so twice.

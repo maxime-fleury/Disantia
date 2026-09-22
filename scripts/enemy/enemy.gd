@@ -30,6 +30,14 @@ enum State {
 	DOWN,    ## Dead, waiting to be restocked.
 }
 
+## What a raider says out loud. Same arrangement as the watch's cries, and the same reason: a
+## camp is otherwise silent until the moment it is on top of you, and the half-second of a voice
+## before the swing is most of what makes a road feel like somewhere other people are.
+## `tools/make_voice.py` reads this block for its list of cries.
+const SHOUT_NOTICE := "Someone is walking the road."
+const SHOUT_HURT := "Hold them. Hold them!"
+const SHOUT_CHAMPION := "You have come to the wrong ring."
+
 @export_group("Body")
 @export var max_hp: float = 55.0
 @export var target_height: float = 1.78
@@ -434,6 +442,7 @@ func take_hit(damage: float, from: Vector3 = Vector3.ZERO) -> float:
 	if not _aggro:
 		_aggro = true
 		state = State.CHASE
+		Voice.shout(SHOUT_CHAMPION if is_champion() else SHOUT_HURT)
 	if hp <= 0.0:
 		_die(from)
 	return dealt
@@ -689,6 +698,10 @@ func _physics_process(delta: float) -> void:
 
 	var can_pursue: bool = _may_pursue()
 	if can_pursue and player_distance <= aggro_radius * Clock.aggro_share():
+		if not _aggro:
+			# Said on the *change*, not while it holds: a raider that announced itself every
+			# frame it could see you would be a raider nobody can hear anything else over.
+			Voice.shout(SHOUT_CHAMPION if is_champion() else SHOUT_NOTICE)
 		_aggro = true
 	elif not can_pursue or player_distance > give_up_radius:
 		# Without the second half of this, aggro is sticky: a raider that noticed you once

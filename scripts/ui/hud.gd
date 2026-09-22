@@ -74,6 +74,9 @@ var _sliders: Dictionary = {}
 var _slider_readouts: Dictionary = {}
 var _drill_readouts: Dictionary = {}
 var _drill_bars: Dictionary = {}
+## The drill ids the rows were built for, so the panel can rebuild them when the catalogue
+## changes under it rather than every frame.
+var _drill_ids: Array = []
 var _aura_buttons: Dictionary = {}
 var _log_lines: Array[String] = []
 var _refresh_accum: float = 0.0
@@ -117,6 +120,14 @@ var _dialogue_options: VBoxContainer
 var _dialogue_hint: Label
 ## The two buttons that turn the voices on and off, kept so the lit one can be moved.
 var _voice_buttons: Array = []
+## The voice trim, and its readout. Held so the panel can show the level that is in force and so
+## a language switch can leave it alone — the volume is a property of the room, not of the words.
+var _voice_volume: HSlider
+var _voice_volume_readout: Label
+
+## The line the volume slider auditions. A real line, from a speaker who has both takes, so the
+## slider can be set by ear in either language instead of by a number on a bar.
+const VOICE_PREVIEW := "A step finished is a step paid."
 ## Whether the hint strip is currently showing something the player can press, so its colour is
 ## only written when it changes.
 var _hint_active: bool = false
@@ -295,6 +306,14 @@ func _set_bar(bar: ProgressBar, target: float) -> void:
 ## lands, slow enough that the eye can follow it — a quarter of a second from empty to
 ## full, which is about the limit of what reads as motion rather than as a jump.
 const BAR_EASE_SPEED := 3.0
+
+
+## Drops a bar from both easing sets. Called when the control itself is going away.
+func _forget_bar(bar: ProgressBar) -> void:
+	if bar == null or not is_instance_valid(bar):
+		return
+	_bar_easing.erase(bar)
+	_bar_target.erase(bar)
 
 
 func _ease_bars(delta: float) -> void:
@@ -738,23 +757,44 @@ func _next_technique_tooltip(pending: Array) -> String:
 
 ## One row per drill, straight from the training catalogue, so a new exercise
 ## appears here without this file knowing anything about it.
+##
+## Rebuilt rather than only filled, because the catalogue itself changes under the panel: the
+## qi cripple takes the pushup's place the moment the pool is deep enough. Both costs are shown
+## as *shares* — "1.8% of your health per rep" is the same number at any size, where "1.3 HP"
+## stops being true the moment the cap grows, and the same goes for the breath it spends.
 func _build_drill_rows() -> void:
-	for entry: Dictionary in Training.EXERCISES:
+	# The easing sets hold the bars themselves as keys, so a row that is thrown away has to be
+	# dropped from them first: a freed object left in there is walked on the next frame, which is
+	# an engine error rather than a stale bar.
+	for old: ProgressBar in _drill_bars.values():
+		_forget_bar(old)
+	for child: Node in _drill_rows.get_children():
+		_drill_rows.remove_child(child)
+		child.queue_free()
+	_drill_readouts.clear()
+	_drill_bars.clear()
+	var entries: Array = Training.catalogue()
+	_drill_ids = Training.catalogue_ids()
+	for entry: Dictionary in entries:
 		var id: String = String(entry["id"])
 		var holder := VBoxContainer.new()
+		holder.name = "Drill_" + id
 		holder.add_theme_constant_override("separation", 2)
 
 		var heading := HBoxContainer.new()
 		var name_label := _make_label(
-			"%s · %s" % [entry["key"], entry["label"]], 13, Color("ffd76e")
+			"%s · %s" % [entry["key"], Loc.say(String(entry["label"]))], 13, Color("ffd76e")
 		)
 		name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-		# The cost is a share of the health cap, so it is shown as one: "1.8% of your
-		# health per rep" is the same number at any size, where "1.3 HP" stops being
-		# true the moment the cap grows.
-		name_label.tooltip_text = "%s\nHold the key to drill. Costs %.1f%% of your health per rep." % [
-			entry["blurb"], float(entry["hp_cost"]) * 100.0,
+		var tip: String = "%s\n%s" % [
+			Loc.say(String(entry["blurb"])), Loc.say("Tap the key to start a set.")
 		]
+		tip += "\n" + Loc.fill("Costs %.1f%% of your health per rep.",
+			[float(entry["hp_cost"]) * 100.0])
+		if float(entry.get("qi_cost", 0.0)) > 0.0:
+			tip += "\n" + Loc.fill("Costs %.1f%% of your qi per rep — and the deeper the pool, the faster the set.",
+				[float(entry["qi_cost"]) * 100.0])
+		name_label.tooltip_text = tip
 		var readout := _make_label("", 12, Color("b9c2cc"))
 		readout.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		heading.add_child(name_label)
@@ -890,6 +930,34 @@ func _build_settings_modal() -> void:
 		voice_row.add_child(pick)
 		_voice_buttons.append(pick)
 	body.add_child(voice_row)
+
+	# The level, under the switch that turns them on: a player who finds the voices too quiet is
+	# the same player who just turned them on, and sending them to another screen for it is how
+	# a whole feature ends up switched off.
+	var volume_row := HBoxContainer.new()
+	volume_row.name = "VoiceVolumeRow"
+	volume_row.add_theme_constant_override("separation", 8)
+	var volume_label := _make_label(Loc.say("Volume"), 13, Color("e6edf5"))
+	volume_label.custom_minimum_size = Vector2(96, 0)
+	volume_row.add_child(volume_label)
+	_voice_volume = HSlider.new()
+	_voice_volume.name = "VoiceVolume"
+	_voice_volume.min_value = 0.0
+	_voice_volume.max_value = 1.0
+	_voice_volume.step = 0.05
+	_voice_volume.value = Voice.volume
+	_voice_volume.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_voice_volume.focus_mode = Control.FOCUS_NONE
+	_voice_volume.mouse_filter = Control.MOUSE_FILTER_STOP
+	_voice_volume.value_changed.connect(_on_voice_volume_changed)
+	volume_row.add_child(_voice_volume)
+	_voice_volume_readout = _make_label("%d%%" % int(round(Voice.volume * 100.0)), 13,
+		Color("f2f6fb"))
+	_voice_volume_readout.name = "VoiceVolumeReadout"
+	_voice_volume_readout.custom_minimum_size = Vector2(48, 0)
+	_voice_volume_readout.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	volume_row.add_child(_voice_volume_readout)
+	body.add_child(volume_row)
 
 	body.add_child(_make_heading("AURA", Color("9ad8ff")))
 	var grid := GridContainer.new()
@@ -1316,6 +1384,19 @@ func _refresh_language_buttons() -> void:
 			button.disabled = i == Loc.language
 
 
+## Says a real line at the level just chosen. A volume control you cannot test from the panel is
+## a volume control you set once, wrong, and never touch again.
+func _on_voice_volume_changed(value: float) -> void:
+	Voice.set_volume(value)
+	if _voice_volume_readout != null and is_instance_valid(_voice_volume_readout):
+		_voice_volume_readout.text = "%d%%" % int(round(value * 100.0))
+	Voice.stop()
+	# The key is the *English* sentence, exactly as everywhere else: `Voice` picks the French take
+	# itself when the interface is French, so translating here would look up a line that cannot
+	# exist and play nothing.
+	Voice.speak(VOICE_PREVIEW)
+
+
 func _on_voices_pressed(on: bool) -> void:
 	Audio.play("ui_toggle", -6.0)
 	Voice.set_enabled(on)
@@ -1430,7 +1511,11 @@ func _stat_readout(stat_id: String) -> String:
 
 
 func _refresh_drills() -> void:
-	for entry: Dictionary in Training.EXERCISES:
+	# The catalogue moves when a pool crosses the unlock, which can happen while the panel is
+	# open — a breakthrough mid-session is exactly when a player is looking at it.
+	if _drill_ids != Training.catalogue_ids():
+		_build_drill_rows()
+	for entry: Dictionary in Training.catalogue():
 		var id: String = String(entry["id"])
 		var active: bool = Training.active == id
 		var readout: Label = _drill_readouts[id]
@@ -2148,7 +2233,7 @@ func _update_status() -> void:
 	# the smallest version of that, and it is why they are written as whole lines in the table.
 	_status_label.text = (
 		Loc.say("WASD move · Shift run · Space jump · click to strike · Q dash · C cultivate · B break through") + "\n"
-		+ Loc.say("E talk to the elder · 1/2/3 drill the body · X qi pressure · T recall · Tab settings · V stats") + "\n"
+		+ Loc.say("E talk to the elder · 1 drill the body · X qi pressure · T recall · Tab settings · V stats") + "\n"
 		+ "%s   ·   %d FPS%s%s%s%s%s%s" % [Clock.clock_text(), Engine.get_frames_per_second(),
 			pointer, state, dash, zone, _attune_state(), valley]
 	)

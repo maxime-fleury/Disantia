@@ -25,6 +25,18 @@ enum State { PATROL, CHASE, STRIKE, DOWN }
 
 @export var village_id: String = ""
 @export var guard_name: String = "The Watch"
+
+## What the watch says out loud, and the only place it is written down.
+##
+## These are not prose anybody *reads*: they are said across a square at the moment a guard
+## decides something about you, and the whole of their worth is the moment. That is why they are
+## constants here rather than lines in `story.gd` — and why `tools/make_voice.py` reads this block
+## directly for its list of cries, so a shout that is written here is a shout that gets recorded.
+const SHOUT_HALT := "Halt. You are not walking past me."
+const SHOUT_WARNING := "We know your face. Walk quietly."
+const SHOUT_ENOUGH := "Enough. Put it down."
+const SHOUT_HUNTING := "Raiders at the wall!"
+const SHOUT_DOWN := "The watch has you. Sit down."
 ## The beat, in world XZ. Walked in order and looped.
 @export var route: PackedVector2Array = PackedVector2Array()
 @export var walk_speed: float = 1.55
@@ -141,6 +153,7 @@ func _choose_target() -> void:
 			and _flat(player.global_position) <= sight:
 		_target = player
 		state = State.CHASE
+		Voice.shout(SHOUT_HALT)
 		return
 	var best: Node3D
 	var best_distance: float = sight
@@ -159,6 +172,7 @@ func _choose_target() -> void:
 	if best != null:
 		_target = best
 		state = State.CHASE
+		Voice.shout(SHOUT_HUNTING)
 		return
 	_target = null
 	state = State.PATROL
@@ -168,9 +182,8 @@ func _choose_target() -> void:
 		var now: float = Time.get_ticks_msec() / 1000.0
 		if now - _warned_at > 24.0:
 			_warned_at = now
-			PlayerData.log_message.emit(
-				"%s: \\\"We know your face. Walk quietly.\\\"" % guard_name, "damage"
-			)
+			PlayerData.log_message.emit("%s: \"%s\"" % [guard_name, SHOUT_WARNING], "damage")
+			Voice.shout(SHOUT_WARNING)
 
 
 func _hunt(target: Node3D, delta: float) -> void:
@@ -206,14 +219,14 @@ func _land() -> void:
 	# in a village square is a body that gets *arrested*, which is the whole design of the ladder.
 	if target == _player_node():
 		if PlayerData.get_value("hp") <= PlayerData.get_cap("hp") * 0.25:
+			Voice.shout(SHOUT_DOWN)
 			Law.arrest(target.global_position, village_id)
 			_target = null
 			state = State.PATROL
 			return
 		if dealt > 0.0:
-			PlayerData.log_message.emit(
-				"%s: \\\"Enough. Put it down.\\\"" % guard_name, "damage"
-			)
+			PlayerData.log_message.emit("%s: \"%s\"" % [guard_name, SHOUT_ENOUGH], "damage")
+			Voice.shout(SHOUT_ENOUGH)
 
 
 func _walk_beat(delta: float) -> void:

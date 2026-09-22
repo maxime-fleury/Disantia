@@ -37,6 +37,11 @@ const EnemyFactory := preload("res://scripts/enemy/enemy_factory.gd")
 
 var _terrain: Node
 var _base: Vector3 = Vector3.ZERO
+## Where the door is in the world, and which way it faces outward. Kept as the plaza is built
+## rather than re-derived by every caller: the door's transform is what the player sees, and a
+## second computation of it is a second answer waiting to disagree with the first.
+var _door_world: Vector3 = Vector3.ZERO
+var _door_out: Vector3 = Vector3.FORWARD
 var _stage: Node3D
 var _floor_root: Node3D
 var _plate: MeshInstance3D
@@ -249,7 +254,8 @@ func _build_door(height: float) -> void:
 	else:
 		heading = Vector2(0.0, -1.0)
 	var door_pos := Vector3(heading.x * (radius + 0.9), 0.0, heading.y * (radius + 0.9))
-	var yaw: float = atan2(heading.y, heading.x)
+	_door_world = _base + door_pos
+	_door_out = Vector3(heading.x, 0.0, heading.y)
 
 	var dark := MeshInstance3D.new()
 	dark.name = "Doorway"
@@ -258,7 +264,12 @@ func _build_door(height: float) -> void:
 	dark.mesh = dark_mesh
 	dark.material_override = _stone(Color("14161c"), 0.0)
 	dark.position = door_pos + Vector3(0.0, 3.5, 0.0)
-	dark.rotation.y = -yaw
+	# The slab's thin axis (local +Z) has to face *outward*, so the doorway reads as a hole in the
+	# ring rather than a fin nailed to it. A box's local +Z lands on the radial direction at
+	# `atan2(heading.x, heading.y)`; the old figure was the complement of that, which laid the
+	# six-metre face along the radius — the door stood at a right angle to the wall it is set in,
+	# which is exactly how it looked from the road.
+	dark.rotation.y = atan2(heading.x, heading.y)
 	add_child(dark)
 
 	for side: float in [-1.0, 1.0]:
@@ -606,14 +617,15 @@ func _warp_player(target: Vector3) -> void:
 
 # ------------------------------------------------------------------ interaction
 
-## How far out from the middle of the tower the door still counts as *reachable*.
+## How far out from the door itself the key still answers.
 ##
-## Generous on purpose, and wider than the shell plus a body: the door is set into a wall, the
-## player arrives along a road that curves, and a key that only answers when you are standing on
-## one exact tile is a key that does not answer. The plaza the tower stands on is `radius + 6`
-## across, so the whole worked ground in front of the door is inside this.
+## The door's own position, not the tower's middle, and this is the whole bug it fixes: measured
+## from the centre, the reach covered the entire footprint of the tower, so the interact key
+## threw the body through the door from *anywhere* at the base — including behind the wall it is
+## set into, where a player pressing E on a locked door was teleported inside it. Standing where
+## a door can be reached is now the only way to reach it.
 func door_reach() -> float:
-	return radius + 6.0
+	return 3.4
 
 
 ## What the key does here, or "" when there is nothing to press it at.
@@ -627,9 +639,22 @@ func interact_prompt() -> String:
 		if _flat_distance(player.global_position, _gate_pad.global_position) <= 3.4:
 			return Loc.say("go up") if _cleared_here else Loc.say("the floor is not clear yet")
 		return ""
-	if _flat_distance(player.global_position, _base) <= door_reach():
+	if at_door(player.global_position):
 		return Loc.say("the tower's door")
 	return ""
+
+
+## True when a body standing at `where` is in front of the door and close enough to touch it.
+##
+## Two conditions rather than one, because "near the door" is not the same as "at the door":
+## the outward side is asked of the door's own facing, so a body inside the wall — or around the
+## curve of the ring — is near it without being at it.
+func at_door(where: Vector3) -> bool:
+	var away: Vector3 = where - _door_world
+	away.y = 0.0
+	if away.length() > door_reach():
+		return false
+	return away.dot(_door_out) >= -0.6
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -641,7 +666,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	# The door, from outside: a conversation rather than a key, because the stairhead and the
 	# frontier are two different runs and the door is where the choice belongs.
 	if not Tower.inside():
-		if _flat_distance(player.global_position, _base) <= door_reach():
+		if at_door(player.global_position):
 			get_viewport().set_input_as_handled()
 			Story.begin("tower_door")
 		return

@@ -98,9 +98,12 @@ func _initialize() -> void:
 	# the same reason.
 	_move_action("dash", [ KEY_Q ], false, [ MOUSE_BUTTON_RIGHT ])
 	_move_action("interact", [ KEY_E ], false)
+	# One drill key, and it names the *slot* rather than the exercise: `Training.catalogue()`
+	# decides what the body's drill is from moment to moment — pushups until the pool can hold a
+	# shell of breath, the qi cripple after. The keys for squats and the iron stance were removed
+	# with the exercises themselves, because a binding that reaches nothing is indistinguishable
+	# from a broken key.
 	_move_action("train_pushups", [ KEY_1 ], false)
-	_move_action("train_squats", [ KEY_2 ], false)
-	_move_action("train_stance", [ KEY_3 ], false)
 	# Qi Pressure. A combat technique rather than a housekeeping key, but kept off the
 	# movement hand for the same reason the drill keys are: it is held for seconds at a
 	# time while running, so it cannot share a finger with WASD or with the dash.

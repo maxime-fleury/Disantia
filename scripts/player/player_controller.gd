@@ -128,7 +128,14 @@ var _recall_blocked: bool = false
 var _burst_timer: float = 0.0
 var _was_running: bool = false
 var _bolt_cooldown: float = 0.0
+## Cloud Step is a *state* rather than a key being held. Held, the technique and the air jump
+## fought each other for the same press: every tap in mid-air began a hover, so the second jump
+## the shop sells was unreachable the moment the art was learned — the game took a movement
+## verb away and gave back a mode. Toggled, a tap in the air is a jump again, two taps are the
+## cloud, and the qi is the only price either of them charges.
 var _flying: bool = false
+## Seconds since the last tap of the jump key, or negative for "no previous tap".
+var _since_tap: float = -1.0
 
 ## Each physical drill, with the key that holds it. Shared with the HUD so the
 ## panel and the input cannot drift apart.
@@ -144,26 +151,34 @@ const BOLT_COST_SHARE := 0.05
 ## should not also out-damage closing the distance.
 const BOLT_DAMAGE_FACTOR := 0.55
 const BOLT_SPEED := 26.0
-## What a second of Cloud Step costs, as a share of the pool. Well above the passive regen
-## (five per cent), which is the number that matters: at six per cent the technique would be
-## free the moment you unlocked it — a permanent hover with a rounding-error bill — and the
-## first flight over a raider camp would be the last interesting decision about it. At nine,
-## the net bleed is four per cent of the pool per second whatever its depth: twenty-five
-## seconds in the air from a full dantian, whether that dantian is two hundred or two
-## thousand. The cost scales with the pool, so the *answer* does not change as you grow.
-const FLIGHT_DRAIN_SHARE := 0.09
+## What a second of Cloud Step costs, as a share of the pool. Above the passive regen (five per
+## cent), which is the number that matters: it is what keeps the technique a *technique* rather
+## than a second way of standing up. Six per cent is a net one per cent of the pool a second, so
+## a full dantian holds the air for a hundred seconds — and past a thousand points of capacity
+## the regen covers it, which is the reward the cultivation ladder is selling.
+const FLIGHT_DRAIN_SHARE := 0.06
 const FLIGHT_RISE := 5.2
 const FLIGHT_ACCEL := 15.0
-## Nine metres. High enough to clear the trees, the roofs and the walls of the camp and read as
-## *flight*, and low enough to stay under the seventeen-metre ward fences — a power that let a
-## body step over those would sell the whole path of rings, three champions and four spirit
-## zones for nothing.
-const FLIGHT_CEILING := 9.0
+## Horizontal acceleration while flying, as a multiple of the ordinary air control. Air control
+## is tuned for a body that is *falling* — barely able to change its mind before it lands — and
+## a body deliberately holding itself up should steer like a body, not like a thrown stone.
+const FLIGHT_CONTROL := 2.4
+## How quickly two taps of the jump key count as one gesture. Long enough for a thumb in mid-air
+## to manage, short enough that a deliberate second jump is never read as a request to fly.
+const DOUBLE_TAP_SECONDS := 0.30
+## Twenty-six metres. The ceiling used to be nine, to stay under the seventeen-metre ward
+## fences: a flight that could step over those would have sold three champions and four spirit
+## zones for nothing. That was a rule about the *map*, and it made the technique a hover — the
+## one thing a player who has just learned to fly does not want to hear. The wards hold by
+## their own logic (they refuse a body rather than block a path), so the fence is still a fence
+## at any altitude, and the ceiling is now only a guard against leaving the terrain behind.
+const FLIGHT_CEILING := 26.0
 
-const DRILLS: Array = [
+## The drill keys, and the drills they reach. One row, because there is one drill at a time:
+## which one the key runs is decided by `Training.catalogue()` — pushups until the body can
+## hold a shell of breath, the qi cripple after.
+const DRILL_KEYS: Array = [
 	["train_pushups", "pushups"],
-	["train_squats", "squats"],
-	["train_stance", "stance"],
 ]
 
 @onready var _model: Node3D = get_node_or_null("Model")
@@ -443,6 +458,9 @@ func _apply_horizontal(delta: float, dir: Vector3) -> void:
 	var target_speed: float = top_speed * (1.0 if _running else walk_factor)
 	var accel: float = ground_accel if is_on_floor() else air_accel
 	var friction: float = ground_friction if is_on_floor() else air_friction
+	if _flying:
+		accel *= FLIGHT_CONTROL
+		friction *= FLIGHT_CONTROL
 	# Burst: the first three quarters of a second of a sprint, and only from a walk. Tracked
 	# from the moment the key goes down while moving at walking pace, so it is a launch rather
 	# than a bonus that is simply always on — a permanent bonus would be a number, and this is
@@ -474,6 +492,7 @@ func _update_coyote(delta: float) -> void:
 	if is_on_floor():
 		_coyote = coyote_time
 		_air_jumps_used = 0
+		_flying = false
 	else:
 		_coyote = maxf(0.0, _coyote - delta)
 
@@ -484,13 +503,39 @@ func jump_velocity() -> float:
 	return sqrt(2.0 * _gravity * maxf(0.01, PlayerData.max_jump_height()))
 
 
+## Every press of the jump key, and the three things it can mean.
+##
+##   * On the ground: a jump.
+##   * In the air, alone: an air jump, exactly as before the art was learned.
+##   * In the air, twice in quick succession: Cloud Step.
+##
+## The double tap *includes* the air jump it was made of, which is the version that reads
+## correctly from the outside: tap, the body kicks off the air, tap again, it stays up. And
+## while flying, one tap is a push and two are the way down, so the two gestures never mean the
+## same thing twice in a row.
 func _handle_jump(delta: float, rooted: bool) -> void:
 	_jump_buffer = maxf(0.0, _jump_buffer - delta)
+	if _since_tap >= 0.0:
+		_since_tap += delta
 	if not rooted and Input.is_action_just_pressed("jump"):
+		var quick: bool = _since_tap >= 0.0 and _since_tap <= DOUBLE_TAP_SECONDS
+		_since_tap = 0.0
+		if _flying:
+			if quick:
+				stop_flight("The cloud lets you down.")
+			else:
+				# A push, not a second technique: the wings give another shove whatever the
+				# air-jump allowance says, because the allowance is about leaping and this is
+				# about steering.
+				velocity.y = jump_velocity() * air_jump_factor
+			return
+		if quick and not is_on_floor() and _coyote <= 0.0 and can_fly():
+			start_flight()
+			return
 		_jump_buffer = jump_buffer_time
 	if rooted or _jump_buffer <= 0.0:
 		return
-	if _coyote > 0.0:
+	if is_on_floor() or _coyote > 0.0:
 		_launch(jump_velocity())
 		return
 	# A jump taken in the air. Only available once a task has taught it, and only as
@@ -551,16 +596,18 @@ func _aim_direction() -> Vector3:
 ## The ceiling is measured from the ground under the body rather than from a height in the
 ## world, so it follows the country: nine metres over a hill is nine metres over a hill.
 func _update_flight(delta: float, rooted: bool) -> void:
-	var wanted: bool = (PlayerData.has_effect("flight") and not rooted and not _downed
-		and not is_on_floor() and Input.is_action_pressed("jump"))
-	if not wanted:
+	if not _flying:
+		return
+	# Touching down, being rooted or going under all let the cloud go: the technique holds a
+	# body *up*, and none of those three states is a body being held up.
+	if rooted or _downed or is_on_floor():
 		_flying = false
 		return
 	var cost: float = PlayerData.get_cap("qi") * FLIGHT_DRAIN_SHARE * delta
 	if PlayerData.spend("qi", cost) < cost:
 		_flying = false
+		PlayerData.log_message.emit("The breath runs out. The air lets you go.", "damage")
 		return
-	_flying = true
 	velocity.y = move_toward(velocity.y, FLIGHT_RISE, FLIGHT_ACCEL * delta)
 	var ground: float = _ground_height()
 	if global_position.y >= ground + FLIGHT_CEILING:
@@ -572,6 +619,31 @@ func _update_flight(delta: float, rooted: bool) -> void:
 
 func is_flying() -> bool:
 	return _flying
+
+
+## True when the technique can be called at all: the art, learned, and air under the feet.
+func can_fly() -> bool:
+	return PlayerData.has_effect("flight")
+
+
+## Lifts the body onto the cloud. Public and free of the input layer, so the suite drives
+## exactly what the double tap drives.
+func start_flight() -> bool:
+	if _flying or not can_fly() or is_on_floor():
+		return false
+	_flying = true
+	velocity.y = maxf(velocity.y, 1.2)
+	PlayerData.log_message.emit("Cloud Step holds. Two taps let it go.", "cultivate")
+	Audio.play_at("whoosh", global_position, -6.0, 1.4)
+	return true
+
+
+func stop_flight(said: String = "") -> void:
+	if not _flying:
+		return
+	_flying = false
+	if said != "":
+		PlayerData.log_message.emit(said, "info")
 
 
 ## The ground under the body, for the flight ceiling. Falls back to the body's own height,
@@ -903,10 +975,20 @@ func reset_fall_tracking() -> void:
 
 
 ## The drill key pressed this frame, or "".
+##
+## The key names a *slot* rather than an exercise: key 1 is the body's drill, and which drill
+## that is depends on the catalogue. That way the bindings do not have to be rewritten, and a
+## player does not have to learn a second key, on the day their cultivation changes what the
+## work is.
 func _drill_key_pressed() -> String:
-	for pair: Array in DRILLS:
-		if Input.is_action_just_pressed(pair[0]):
+	for pair: Array in DRILL_KEYS:
+		if not Input.is_action_just_pressed(pair[0]):
+			continue
+		if Training.available(String(pair[1])):
 			return String(pair[1])
+		# The catalogue has moved on: the key still means "the body's drill".
+		var ids: Array = Training.catalogue_ids()
+		return String(ids[0]) if not ids.is_empty() else ""
 	return ""
 
 

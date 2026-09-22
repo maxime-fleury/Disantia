@@ -53,7 +53,7 @@ on the cross-origin isolation headers Godot's web export wants.
 |---|---|
 | `W` `A` `S` `D` | Move |
 | `Shift` | Run — this is what trains SPEED |
-| `Space` | Jump — and, once a deep enough dantian has bought Cloud Step, **hold** it in the air to walk on it |
+| `Space` | Jump. Once a deep enough dantian has bought Cloud Step, **tap it twice in the air** to walk on it, and twice again to come down |
 | `R` | Throw a ball of your own aura (once QI has bought Qi Bolt) |
 | Left click / `F` | Strike |
 | Right click / `Q` | Dash (unlocked by a task) |
@@ -61,7 +61,7 @@ on the cross-origin isolation headers Godot's web export wants.
 | `T` (hold) | Attune and return to the fire. A blow breaks it |
 | `C` | Cultivate (sit and refine) — a toggle |
 | `B` | Break through, when insight is full |
-| `1` `2` `3` | Drill the body — pushups, squats, iron stance. Toggles |
+| `1` | Drill the body: pushups until the pool reaches 500 QI, the qi cripple after. A toggle |
 | `E` | Talk, or take a stair — whatever the line above the hint strip says is within reach |
 | `Tab` | Settings |
 | `V` | Fold the stat readout away |
@@ -81,9 +81,9 @@ There are seven stats and none of them has a skill point attached to it:
 | **HP** | Taking damage |
 | **SPEED** | Running with `Shift` held |
 | **JUMP** | Jumping, scaled by how high |
-| **DEFENSE** | Weathering damage — half an xp per point taken |
+| **DEFENSE** | Weathering damage — half an xp per point taken, from a raider's fist *or* from a set |
 | **ATTACK** | Landing blows on posts and raiders |
-| **BODY** | Physical drills — pushups, squats, iron stance |
+| **BODY** | The body's drill — pushups, and the qi cripple once the pool is deep |
 
 SPEED and JUMP are *allocations*: their cap is what you have earned, and a slider in
 the settings panel decides how much of that cap you are actually using. Both are
@@ -92,6 +92,14 @@ trained for. Ranks of BODY also widen the HP cap, which is what physical trainin
 for: it costs blood rather than qi, and it is the only path to a bigger body. Jump height has an absolute ceiling of **20 m** —
 past that the body is not jumping any more, and every hill and fence laid out to be
 walked would stop meaning anything.
+
+**One drill, and which one it is depends on your cultivation.** Three physical exercises
+(pushups, squats, an iron stance) were three ways of paying the same blood for the same attribute —
+a panel of rows where one row was the whole decision. Past **500 QI** the work changes character:
+the single drill becomes the **qi cripple**, which spends breath as well as blood and paces itself
+off what the body takes back per second, so a deeper dantian *drills* faster as well as longer.
+Both drills pay DEFENSE at the same rate a raider's blow does, because blood spent on purpose is
+still blood.
 
 ### Every stat *becomes* something
 
@@ -180,12 +188,15 @@ act at a distance rather than at arm's length.
   have equipped, it reaches about thirty metres, and it costs a twentieth of the pool per
   throw, so how many you can put in the air in one breath is a statement about the pool. A
   cooldown stops it being a gun.
-* **Cloud Step** (QI ×4, hold `Space` airborne) — a floor made of qi, nine metres up. It is a
-  hold rather than a press because a flight made of taps is a double jump with better manners,
-  and it is paid for the whole time it is on. The ceiling is measured from the ground under the
-  body, so it follows the country rather than a plane in the sky, and it is deliberately below
-  the ward fences: a power that let a body step over one would sell the path of rings, the three
-  champions and the four spirit zones for the price of a held key.
+* **Cloud Step** (QI ×4, **double-tap `Space`** airborne) — a floor made of qi, twenty-six metres
+  up. It is a *toggle* rather than a hold, and that is not a preference: held, the technique and
+  the air jump fought over the same press, so every tap in mid-air began a hover and the second
+  jump the shop sells was unreachable the moment the art was learned — the game took a movement
+  verb away and gave back a mode. Toggled, one tap in the air is a jump again, two are the cloud,
+  one tap up there is a push and two are the way down. It costs 6% of the pool a second, which is
+  about a hundred seconds from a full dantian, and past 1000 QI the regeneration covers it. The
+  ceiling is measured from the ground under the body, so it follows the country rather than a
+  plane in the sky.
 
 ### Qi Pressure
 
@@ -318,6 +329,13 @@ the *only* way in and nothing said so — the climb was reachable and unreachabl
 strip now answers for the whole world: anything in the `interactable` group says what the key
 would do and how far away it counts, and the nearest one wins.
 
+The door itself was wrong for just as long, in two ways that a test now holds down. Its slab was
+rotated a quarter turn, so the six-metre face lay *along* the radius — a fin nailed to the wall
+rather than a hole in it — and the key answered within `radius + 6` of the tower's **middle**,
+which covers the entire footprint: standing behind the wall and pressing `E` threw the body
+inside. It is measured from the door's own position now, and from its outward side, so standing at
+a door is the only way to reach one.
+
 ### One line that says what is happening
 
 Four systems have nothing to do with each other and share a single line at the foot of the
@@ -340,6 +358,20 @@ faded out by the clock, so midday is untouched. The moon takes the sun's own dir
 it around — there is already one light in this world and a second would have to be reconciled with
 its shadows — and the stars are the shader's own hash rather than a texture, so the web build
 carries none of them.
+
+### The lamp
+
+A night in this valley is a real night — the light goes, the raiders see further, the raids only
+ever land in the dark — and for a long time the honest answer to it was a campfire and a wait.
+The **Traveller's Lamp** is the third answer: a hooded lamp on a belt hook, sold by the traders at
+Hollowmere, worn, and taken to the smith at Stonewatch when its light stops being enough.
+
+**Its radius is the forge tier and nothing else**, which is what makes upgrading it a change you
+can see rather than a number that moves: five ranks take the lit circle from 7 m to 20.5 m. It
+burns only when the sky is dark enough to matter — so it is a tool rather than a permanent glow,
+and a lamp that is always on is a lamp nobody notices — and it hangs on the *body* rather than on
+the character model, because a light under a scaled parent has its range scaled with it, which
+would make how far you can see depend on how tall your character happens to be.
 
 ### Two languages
 
@@ -365,29 +397,64 @@ The suite checks the one mistake a translated format string can make — a place
 missing or changed kind, which is a crash in the middle of a conversation rather than a typo — by
 comparing the placeholders of every row in the table.
 
+The table is maintained by a tool as well as by hand. `tools/translate_fr.py` reads every literal
+in the project that could reach the screen, drops the ones already translated, and asks a model
+for the rest — then throws away any row whose placeholders moved, whose `%%` changed count, or that
+came back identical, because a row that is wrong is worse than a row that is missing. Keys, paths,
+sound names, group names and colour hexes are filtered out before the model ever sees them, and
+the proper nouns are passed in explicitly, because a model left to itself will translate a village.
+
+```bash
+python tools/translate_fr.py --key sk-or-... --dry-run    # what is missing
+python tools/translate_fr.py --key sk-or-...              # fill it in
+```
+
 ### Voices
 
-Around ninety of the lines the game prints are **recorded**, and a conversation says its line
-through the same signal that puts it on the band. Fifteen characters with fifteen voices is the
-difference between a crowd you interview and a place you walk into.
+Every line the game speaks is **recorded**, and a conversation says its line through the same
+signal that puts it on the band. Fifteen characters with voices is the difference between a crowd
+you interview and a place you walk into.
 
-* The lines are not listed by hand. `tools/make_voice.py` reads them out of the prose tables the
-game already prints from (`story.gd`, `villages.gd`, `quests.gd`, `tower.gd`), which is the only way
-the corpus stays honest: a list kept beside the sentences is wrong the first time somebody rewrites
-a greeting, and the failure is silent.
+Three kinds of thing are recorded, and the split is the whole design:
+
+* **Lines** — the prose the story tables hold, said whole. Read out of the tables the game already
+  prints from (`story.gd`, `villages.gd`, `quests.gd`, `tower.gd`), which is the only way the
+  corpus stays honest: a list kept beside the sentences is wrong the first time somebody rewrites a
+  greeting, and the failure is silent. **All 92 are dubbed in both languages.**
+* **Phrases** — the *fixed halves* of a sentence with a number in it. `Took 12.4 damage.` is a
+  different sentence every time the game prints it, so no recording can ever match one — but
+  `The lamp takes.` is fixed, and so is `A wound closes.`. They are cut out of the game's own
+  format strings: every literal with a `%` specifier in it is split at the specifiers, and the
+  pieces that read as language are recorded. That is what makes the *dynamic* half of the prose
+  audible at all, and it is the one mechanism here that could not have been done by hand.
+* **Shouts** — what the watch and the raiders say out loud. They are `SHOUT_*` constants in
+  `guard.gd` and `enemy.gd`, which is where the tool reads them from: a cry written there is a cry
+  that gets recorded, and one that is renamed stops being recorded rather than silently going on
+  being played from a stale file. They are said on the moment — `Halt. You are not walking past
+  me.` across a square, `Someone is walking the road.` from a camp you have just walked into —
+  which is the cheapest way to make a road feel like somewhere other people are.
+
 * **A language is a set of recordings, not a translation of one.** French is a separate take; a
   line with no French recording is played in English rather than in an English voice reading French
-  words, and a line with neither is silent. Most lines are dynamic (a floor number, a crystal
-  count) and will never be recorded, which is fine and is the point.
+  words, and a line with neither is silent.
 * The line is the key, exactly as in the interface, so a line with no recording is simply a line
   nobody has said yet.
+* The **log** is listened to as well as the conversations, so a dynamic line says its fixed half
+  when it is printed — with a gap of a second and a half between two of them, and never over the
+  top of somebody talking to you, because half of what the log prints is a consequence of the other
+  half and reading all of it out turns a fight into a monologue.
 * Regenerating is free for anything already made, so the tool is a top-up rather than a rebuild:
+  `--prune` deletes recordings no row points at (a line that gets reworded leaves its file behind
+  forever, and it was nine megabytes of the repository before this existed).
 
 ```bash
 python tools/make_voice.py --key sk-or-... --voice Eve
+python tools/make_voice.py --prune
 ```
 
-`Voice` can be turned off in the settings panel, and the choice is saved.
+`Voice` can be turned off in the settings panel, and the level has a slider underneath it — a
+player who finds the voices too quiet is the same player who just turned them on, and sending them
+to another screen for it is how a whole feature ends up switched off.
 
 ---
 
