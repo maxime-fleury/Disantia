@@ -119,12 +119,22 @@ func _land(target: Node3D) -> void:
 	if finished:
 		Audio.play_at("drop", target.global_position, -2.0, 0.9)
 		PlayerData.log_message.emit(
-			"%s. ATTACK +%s." % [
-				"The raider falls" if target.is_in_group("enemy") else "The post comes apart",
-				String.num(reward, 1),
-			],
+			"%s. ATTACK +%s." % [_fall_line(target), String.num(reward, 1)],
 			"gain"
 		)
+
+
+## What a finished target is called. A swing does not care what it found — posts, raiders and
+## people all answer `take_hit` — but the *log* has to, because "the post comes apart" printed
+## over a watchman is how a player fails to notice they just became an outlaw.
+func _fall_line(target: Node3D) -> String:
+	if target.is_in_group("enemy"):
+		return "The raider falls"
+	if target.is_in_group("guard"):
+		return "The watchman goes down"
+	if target.is_in_group("bystander"):
+		return "Somebody who lives here is on the ground"
+	return "The post comes apart"
 
 
 ## Cleave: a blow that carries into a second body.
@@ -146,7 +156,7 @@ func _cleave(first: Node3D, damage: float) -> void:
 	var here: Vector2 = Vector2(first.global_position.x, first.global_position.z)
 	var best: Node3D
 	var best_distance: float = radius
-	for group: String in ["enemy", "training_post"]:
+	for group: String in ["enemy", "training_post", "bystander"]:
 		for node in get_tree().get_nodes_in_group(group):
 			var other := node as Node3D
 			if other == null or not is_instance_valid(other) or other == first:
@@ -183,7 +193,7 @@ func nearest_target() -> Node3D:
 	var best: Node3D
 	var best_distance: float = reach
 	var here: Vector2 = Vector2(global_position.x, global_position.z)
-	for group: String in ["training_post", "enemy"]:
+	for group: String in ["training_post", "enemy", "bystander"]:
 		for node in get_tree().get_nodes_in_group(group):
 			var target := node as Node3D
 			if target == null or not is_instance_valid(target):

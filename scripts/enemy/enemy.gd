@@ -66,6 +66,9 @@ enum State {
 ## you have already learned, and re-learning it is not what a champion is for.
 @export var display_name: String = ""
 @export var warden_id: String = ""
+## Set when this body is the mark of a bounty. It is what the board is told when the body goes
+## down, and it is why a *named* raider exists at all: the name is the contract.
+@export var bounty_id: String = ""
 ## Its size. A champion is a head taller than the raiders it stands with, which is the only
 ## signal of rank that works at forty metres in fog.
 @export var scale_factor: float = 1.0
@@ -160,6 +163,11 @@ func _ready() -> void:
 		_build_rune()
 		_build_nameplate()
 		_bolt_timer = bolt_interval
+	elif display_name != "":
+		# A bounty's mark is an ordinary raider with a *name*, which is the whole trick of the
+		# board: the fight is the fight the player already knows, and a name over the head is
+		# what turns it back into an event.
+		_build_nameplate()
 
 
 ## The raider is the player's own character model with a different robe. The kit ships
@@ -434,6 +442,11 @@ func _die(from: Vector3) -> void:
 	Quests.report("crystals", float(crystals))
 	if is_champion():
 		_fell_champion()
+	elif bounty_id != "":
+		# A mark pays nothing here. The price is settled at the village that posted it, because
+		# the walk back to the board is what makes the board a place rather than a counter.
+		PlayerData.log_message.emit("%s is down." % display_name, "gain")
+		Bounties.felled(bounty_id)
 	else:
 		PlayerData.log_message.emit(
 			"Raider down. +%d crystals." % crystals, "gain"
@@ -557,12 +570,12 @@ func _may_pursue() -> bool:
 	# and a mercy that also made a body invulnerable would not be a mercy.
 	if _pacified and not _provoked:
 		return false
-	var zone: Node = get_tree().get_first_node_in_group("safe_zone")
-	if zone != null and zone.has_method("contains"):
-		if bool(zone.call("contains", _player.global_position)):
-			return false
-		if bool(zone.call("contains", global_position)):
-			return false
+	# A sanctuary — the home camp or a village — is ground a raider does not enter, and it will
+	# not follow a body into one. Asked of the haven registry rather than of a single scene
+	# node, because there is more than one such place now and a rule written against "the"
+	# safe zone would have left every village open.
+	if Haven.contains(_player.global_position) or Haven.contains(global_position):
+		return false
 	var home_distance: float = Vector2(
 		global_position.x - home.x, global_position.z - home.z
 	).length()

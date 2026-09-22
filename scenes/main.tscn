@@ -1,4 +1,4 @@
-[gd_scene load_steps=17 format=3]
+[gd_scene load_steps=19 format=3]
 
 [ext_resource type="Script" path="res://scripts/world/world.gd" id="1_world"]
 [ext_resource type="Script" path="res://scripts/world/terrain.gd" id="2_terrain"]
@@ -14,6 +14,8 @@
 [ext_resource type="Script" path="res://scripts/world/landmarks.gd" id="12_landmarks"]
 [ext_resource type="Script" path="res://scripts/world/ward_walls.gd" id="13_wards"]
 [ext_resource type="Script" path="res://scripts/world/people.gd" id="14_people"]
+[ext_resource type="Script" path="res://scripts/world/tower_site.gd" id="15_tower"]
+[ext_resource type="Script" path="res://scripts/world/villages_place.gd" id="16_villages"]
 
 [sub_resource type="ProceduralSkyMaterial" id="Sky_mat"]
 sky_top_color = Color(0.25, 0.42, 0.72, 1)
@@ -49,6 +51,14 @@ directional_shadow_max_distance = 220.0
 
 [node name="Terrain" type="StaticBody3D" parent="."]
 script = ExtResource("2_terrain")
+
+; The tower and the villages stand before the scatter and the camps on purpose: they register
+; the ground they own, and every placer after them asks before it drops something on it.
+[node name="Tower" type="Node3D" parent="."]
+script = ExtResource("15_tower")
+
+[node name="Villages" type="Node3D" parent="."]
+script = ExtResource("16_villages")
 
 [node name="Scatter" type="Node3D" parent="."]
 script = ExtResource("5_scatter")

@@ -194,6 +194,8 @@ func _sample_ground(inner: float, outer: float, relax: float) -> Vector3:
 			continue
 		if _terrain.has_method("slope_at") and float(_terrain.call("slope_at", x, z)) > slope_limit:
 			continue
+		if Villages.near_site(x, z, 12.0):
+			continue
 		if not _clear_of_zones(Vector2(x, z)):
 			continue
 		return Vector3(x, float(_terrain.call("surface_height_at", x, z)), z)

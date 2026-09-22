@@ -9,6 +9,11 @@ Built in **Godot 4.7** (GDScript), 3D, with the compatibility renderer so it run
 browser as well as on Windows. Full controller support is not there yet; keyboard and
 mouse only.
 
+Around the body there is now a **valley**: three walled villages with a watch that walks
+beats and arrests people, a hundred-floor tower with a boss every ten floors, a bounty board
+in every village, a forge that works a champion's material into a named weapon, a day and a
+night, and the wound you carry home from dying.
+
 ---
 
 ## Running it
@@ -264,9 +269,55 @@ with a burned camp standing again would make the choice a session-long trinket.
 Striking a raider pays ATTACK, prints the number that just came off it, and lights the body
 up for a tenth of a second; being hit pays HP; killing one pays crystals, which the
 elder's tasks and the sites out in the world also hand out. Crystals are spent at the
-elder's shelf, so the fight, the walk and the training all feed the same purse. Dying
-respawns you at the spawn point and costs you nothing — the point of the safe zone and
-of the leash is that retreating is always an option.
+elder's shelf, so the fight, the walk and the training all feed the same purse.
+
+Dying respawns you at the spawn point and costs you nothing you cannot work off: a **wound**.
+Wounds stack, make you take more damage and breathe back less qi, and close on their own out of
+a fight — or at a village healer, or in a spirit zone, fast. It is deliberately *not* a timer:
+the punishment for dying is a walk and a decision, not three minutes of watching a number go
+down while you are not allowed to play.
+
+### The three villages
+
+Hollowmere, Stonewatch and Towerfall — one beside the road of each ring, each a levelled square
+with a palisade, a gate, a well, huts, its own **specialty** (the herbalist, the smith, the
+scholar) and **five people** with names over their heads. They are **sanctuaries**: nothing
+follows you inside a palisade, and the watch walks *outside* it, which is where the fighting is
+meant to happen.
+
+* **A road rather than a checklist** — finishing a village's business hands you something to
+  carry to the next one, so the map is walked in an order instead of picked over.
+* **Reputation, village by village** — serving one is noticed by the others, and what a
+  villager says to you depends on how much of you there is and what you have done elsewhere.
+* **The bounty board** — each village posts named marks: an ordinary raider with a *name*, a
+  modifier and a price. The fight is one you already know; the name is what makes it an event,
+  and the price is paid at the board, which is why the mark is worth walking back for.
+* **The forge** — the smith takes a **signed material** (a champion's, or a mark's) and works it
+  into a named weapon whose look changes at the tiers. Gear *multiplies* what you trained and
+  never replaces it: an arm that hits for a flat +20 would make the training pointless.
+* **The watch** — guards walk beats outside every gate, hunt raiders, and keep the peace.
+* **Getting wanted** — strike a villager and you are **hunted**: the watch comes for you, the
+  shops shut and the prices rise. Being caught is a **cell** — a door in the world with a fine
+  on it — not a menu and not a timer.
+
+### The Tower of the Tenth Seat
+
+A hundred floors of composed arena on the far road: **ten bands** of ten, each band with its own
+theme, colour and rule (a band that is dark, a band that burns), and a **boss every ten**. The
+arena is one set that moves and repaints, so a hundred floors is a hundred *fights* rather than a
+hundred rooms.
+
+What makes it a climb rather than a corridor is that **nothing resets between floors**: no
+trance to sit in, no shelf, and the only healing is what you carried in. The way down is always
+open, your best depth is kept, and the crown is the highest thing on the map by an order of
+magnitude — you can see what you have not done yet from thirty metres away.
+
+### Day and night
+
+The clock runs at a pace you can watch: the sun's colour and angle, the sky and the fog move
+with it, meditating hurries time along, and the night changes what the world is like to be out
+in — the wards read differently, aggression and leashes shift, and the gates of a village are
+the only thing worth standing behind.
 
 ---
 
@@ -282,7 +333,7 @@ godot --headless --path . -- --selftest
 It ends with a count and exits non-zero if anything failed:
 
 ```
----- self test: 730 checks, 0 failed ----
+---- self test: 898 checks, 0 failed ----
 ```
 
 It is run against the **shipped binary** as well as the editor, which has caught real
@@ -308,13 +359,19 @@ clock the game integrates over.
 ```
 scenes/     main, player, hud, and the character/asset scenes
 scripts/
-  autoload/ player_data (stats, caps, save), cultivation, training, quests, shop, audio,
-            wards (the gates and the champions), story (the cast and the decisions)
+  autoload/ player_data (stats, caps, save, wounds, gear), cultivation, training, quests,
+            shop, audio, wards (the gates and the champions), story (the cast and the
+            decisions), haven (the sanctuary registry), villages (the three towns, their
+            people and their reputation), law (wanted, fines, cells), bounties (the boards),
+            forge (materials and named gear), tower (the hundred floors), clock (day and
+            night)
   player/   controller, animator, camera rig, striker, aura, qi_pressure
   world/    terrain, roads, scatter, camps, qi zones, safe zone, signposts,
-            landmarks (the sites), quest_npc (the elder), villager, people (the crowd)
+            landmarks (the sites), quest_npc (the elder), villager, people (the crowd),
+            village_site + villages_place (the towns), village_npc, guard (the watch),
+            tower_site (the tower and its arena)
   ui/       hud, minimap, wayfinder, avatar nameplate
-  enemy/    the raider
+  enemy/    the raider, the factory that composes a floor's fight
 tests/      self_test.gd — the headless suite
 tools/      setup_project.gd (writes project.godot), export scripts, web server
 ```

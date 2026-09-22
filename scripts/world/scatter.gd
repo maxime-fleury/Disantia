@@ -289,6 +289,12 @@ func _scatter_species(spec: Dictionary) -> void:
 			if x * x + z * z < clear_sq:
 				rejected["clear"] += 1
 				continue
+			# No stand of pines through a village square and none through the tower's door. The
+			# villages are placed before the scatter in the scene order precisely so that this
+			# question has an answer.
+			if Villages.near_site(x, z, 2.5):
+				rejected["clear"] += 1
+				continue
 			if rng.randf() > density:
 				rejected["density"] += 1
 				continue

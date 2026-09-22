@@ -32,6 +32,30 @@ var _inside: bool = false
 func _ready() -> void:
 	add_to_group("safe_zone")
 	_build()
+	_register_with_haven()
+	# The world is rebuilt from scratch by the suite, so the registry must not keep a site
+	# from a camp that no longer exists.
+	tree_exiting.connect(func() -> void: Haven.unregister(Haven.HOME_ID))## The camp is a sanctuary like any other: the *rule* lives in the Haven autoload, and this
+## node is the one that knows where the ground under it is and what the bubble measures.
+## The two lines it carries are the ones this file used to print itself, kept where the rest
+## of the enter/leave lines live so every safe place speaks the same way.
+func _register_with_haven() -> void:
+	var ground: float = global_position.y
+	var terrain: Node = get_parent().get_node_or_null("Terrain")
+	if terrain != null and terrain.has_method("surface_height_at"):
+		ground = float(terrain.call(
+			"surface_height_at", global_position.x, global_position.z
+		))
+	Haven.register({
+		"id": Haven.HOME_ID,
+		"name": "the home camp",
+		"kind": "camp",
+		"centre": Vector3(global_position.x, ground + 0.2, global_position.z),
+		"radius": radius,
+		"wake": spawn_point(),
+		"enter": "The camp wards hold. Nothing here will follow you in.",
+		"exit": "You step beyond the camp wards.",
+	})
 
 
 func _build() -> void:
@@ -110,17 +134,10 @@ func _process(delta: float) -> void:
 		_player = get_parent().get_node_or_null("Player") as Node3D
 		if _player == null:
 			return
-	var was_inside: bool = _inside
+	# Tracked here rather than in the registry because the camp's boundary is a sphere and
+	# `Haven.contains` asks this node about it. The crossing itself is announced by Haven,
+	# which knows the name of the place and speaks for every safe place the same way.
 	_inside = contains(_player.global_position)
-	if _inside == was_inside:
-		return
-	# Said once per crossing: the difference between a rule the player knows and one
-	# they only ever feel as "the raiders stopped following me".
-	PlayerData.log_message.emit(
-		"The camp wards hold. Nothing here will follow you in." if _inside
-		else "You step beyond the camp wards.",
-		"info" if _inside else "damage"
-	)
 
 
 ## True when a world position is inside the bubble. Spherical on purpose: the zone has

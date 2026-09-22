@@ -314,6 +314,16 @@ func _apply_coefficient() -> void:
 func start_meditation() -> bool:
 	if meditating:
 		return false
+	# Not inside the tower. A trance on a landing would be a rest between floors, and the entire
+	# design of the climb is that there is no rest — the pills in the belt are the rest, and they
+	# were paid for at a village. Refusing here rather than hiding the key means the reason is
+	# said out loud the first time somebody tries it.
+	if Tower.inside():
+		PlayerData.log_message.emit(
+			"The tower's stair answers nothing. Whatever you carried up is what you have.", "damage"
+		)
+		Audio.play("error", -6.0)
+		return false
 	meditating = true
 	# The qigong cycle must be able to empty the dantian; passive regen would otherwise
 	# cancel the drain out and meditation would cost nothing. Nothing to set here: the flag

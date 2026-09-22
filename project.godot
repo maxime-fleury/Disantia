@@ -26,6 +26,13 @@ Quests="*res://scripts/autoload/quests.gd"
 Shop="*res://scripts/autoload/shop.gd"
 Wards="*res://scripts/autoload/wards.gd"
 Story="*res://scripts/autoload/story.gd"
+Haven="*res://scripts/autoload/haven.gd"
+Forge="*res://scripts/autoload/forge.gd"
+Villages="*res://scripts/autoload/villages.gd"
+Clock="*res://scripts/autoload/clock.gd"
+Law="*res://scripts/autoload/law.gd"
+Tower="*res://scripts/autoload/tower.gd"
+Bounties="*res://scripts/autoload/bounties.gd"
 
 [display]
 

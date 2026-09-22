@@ -25,6 +25,10 @@ const SAMPLE_POINTS: Array = [
 	Vector2i(-2, 7),
 ]
 const HEIGHT_TOLERANCE := 0.5
+## The largest rise between one metre and the next that the suite will call walkable ground.
+## Deliberately at the body's own step-up: above it the controller climbs nothing and the run
+## stops against a face a ray never sees.
+const LANE_STEP := 0.4
 ## How far out locomotion is measured, and how far ahead of the body the lane has to
 ## be clear for. The home camp reaches a little over ten metres from the origin, so
 ## the first figure steps well outside it and the second covers the few metres the
@@ -375,6 +379,17 @@ func _first_triangle_rh_normal(mesh: Mesh) -> Vector3:
 	return (b - a).cross(c - a)
 
 
+## Names a collider the way a failure message needs it: the node that owns it and the scene it
+## came from. A bare coordinate pair tells you where the problem is but never what it is, and
+## the whole cost of a failing probe is the search it sends you on.
+func _describe_collider(other: Object) -> String:
+	if other is Node:
+		var node: Node = other as Node
+		var owner_name: String = node.get_parent().name if node.get_parent() != null else ""
+		return "%s/%s" % [owner_name, node.name]
+	return "<%s>" % other.get_class()
+
+
 func _test_terrain_alignment() -> void:
 	_section("Terrain / collision alignment")
 	var state: PhysicsDirectSpaceState3D = get_viewport().world_3d.direct_space_state
@@ -385,6 +400,7 @@ func _test_terrain_alignment() -> void:
 	var worst: float = 0.0
 	var misses: int = 0
 	var covered: int = 0
+	var blocked: Array[String] = []
 	for point: Vector2i in SAMPLE_POINTS:
 		var x: float = float(point.x)
 		var z: float = float(point.y)
@@ -396,8 +412,9 @@ func _test_terrain_alignment() -> void:
 		# until the road count changed and the camp's procedural layout moved with it,
 		# which is exactly how a sample-point assumption turns into a false failure.
 		var skip: Array[RID] = exclude.duplicate()
+		var blockers: Array[String] = []
 		var expected: float = _terrain.call("height_at", x, z)
-		for attempt in 4:
+		for attempt in 8:
 			var query := PhysicsRayQueryParameters3D.create(
 				Vector3(x, 300.0, z), Vector3(x, -200.0, z), 1, skip
 			)
@@ -412,12 +429,15 @@ func _test_terrain_alignment() -> void:
 			var other: Object = hit.get("collider")
 			if not other is CollisionObject3D:
 				break
+			blockers.append(_describe_collider(other))
 			skip.append((other as CollisionObject3D).get_rid())
+		if not blockers.is_empty():
+			blocked.append("(%d, %d): %s" % [point.x, point.y, ", ".join(blockers)])
 
 	_check(misses == 0, "ray hits terrain at every sample point", "%d missed" % misses)
 	_check(covered == SAMPLE_POINTS.size(),
 		"every sample point measures the terrain and not what is standing on it",
-		"%d of %d cleared" % [covered, SAMPLE_POINTS.size()])
+		"%d of %d cleared — %s" % [covered, SAMPLE_POINTS.size(), "; ".join(blocked)])
 	_check(worst <= HEIGHT_TOLERANCE, "collision matches terrain heights at grid points",
 		"worst delta %.3f m" % worst)
 
@@ -1631,7 +1651,11 @@ func _test_camp() -> void:
 	_check(not gate_hit.is_empty()
 			and absf(float(gate_hit["position"].y) - at_gate) < 0.25,
 		"the south gateway is open to walk through",
-		"hit %s vs ground %.2f" % [str(gate_hit.get("position", "nothing")), at_gate])
+		"hit %s (%s) vs ground %.2f" % [
+			str(gate_hit.get("position", "nothing")),
+			_describe_collider(gate_hit.get("collider", null)),
+			at_gate,
+		])
 
 
 ## Bigger and flatter are both numbers rather than opinions: a world described as
@@ -2368,6 +2392,13 @@ func _test_poses() -> void:
 		if not _player.is_on_floor():
 			lifted = true
 			break
+	# A jump that does not happen is never one bug: something is *holding* the body, and which
+	# of the four things it is decides where to look. Named here rather than guessed at.
+	if not lifted:
+		print("  info  the leap was refused: meditating=%s downed=%s training=%s talking=%s vy=%.2f" % [
+			Cultivation.meditating, _player.call("is_downed"), Training.is_training(),
+			Story.talking(), _player.velocity.y,
+		])
 	_check(lifted, "the leap leaves the ground")
 	var air_frames: int = 0
 	var tucked: bool = false
@@ -3133,11 +3164,35 @@ func _test_wayfinder() -> void:
 	if landmarks == null:
 		return
 
-	view.call("_update")
+	# Every panel down first. A conversation or an open panel holds the world and hides the
+	# compass with it, and the section before this one ends with people talking — so without
+	# this the checks below measure the last panel left up and report it as a compass that
+	# points at the wrong place.
+	Story.close()
+	_hud.call("close_tasks")
+	_hud.call("close_settings")
+	await _settle(2)
+
 	var expected: Dictionary = landmarks.call("nearest_unfound", _player.global_position)
+	# Something has to be left to point at, and by now there may not be: the discovery section
+	# walks the map for a living, so the compass can legitimately have nothing to say. One site
+	# is put back on the unfound list for the length of the section and restored after, which
+	# keeps every check below measuring an arrow instead of an empty world.
+	var borrowed: Dictionary = {}
+	if expected.is_empty():
+		for site: Dictionary in landmarks.call("sites"):
+			if bool(site.get("discovered", false)):
+				borrowed = site
+				site["discovered"] = false
+				break
+		expected = landmarks.call("nearest_unfound", _player.global_position)
 	_check(not expected.is_empty(), "there is somewhere left to find")
 	if expected.is_empty():
 		return
+	# Asked *after* the world was put back the way the checks need it. A compass updated before
+	# that answers about a map with nothing left on it, and its name is the stale one from the
+	# last time it had something to say.
+	view.call("_update")
 	_check(bool(view.call("active")), "which the compass points at")
 	_check(String(view.call("target_name")) == String(expected["name"]),
 		"naming the nearest one not yet found",
@@ -3180,6 +3235,10 @@ func _test_wayfinder() -> void:
 	_hud.call("close_settings")
 	view.call("_update")
 	_check(bool(view.call("active")), "and back once they close")
+	# The borrowed site goes back to found last, so that it can do its job for the checks
+	# above — including the one that needs the compass to still have somewhere to point.
+	if not borrowed.is_empty():
+		borrowed["discovered"] = true
 
 
 ## How far the least well-placed site sits from the nearest road, for the check's detail
@@ -3505,14 +3564,37 @@ func _test_enemies() -> void:
 
 	# The leash is what makes a camp escapable, and it is measured rather than asserted:
 	# standing at the camp draws them in, and leaving takes them off you.
-	_player.call("warp_to", home + Vector3(7.0, 2.0, 0.0))
+	#
+	# *Where* the player stands is chosen rather than fixed. `home + seven metres east` was a bet
+	# on the camp's layout, and the camps are placed against the world now: one of them puts a hut
+	# between the fire and that spot, and a raider that spends the leg sliding along a wall reads
+	# exactly like a raider that will not come after you.
+	var stand: Vector3 = home
+	for i in 8:
+		var angle: float = TAU * float(i) / 8.0
+		var at := home + Vector3(cos(angle) * 7.0, 0.0, sin(angle) * 7.0)
+		at.y = float(_terrain.call("surface_height_at", at.x, at.z)) + 1.0
+		var to_spot: Vector3 = at - bot.global_position
+		if to_spot.length() < 0.1:
+			continue
+		if _lane_clear(bot.global_position + Vector3(0.0, 1.0, 0.0), to_spot.normalized(), 8.0):
+			stand = at
+			break
+	_player.call("warp_to", stand)
 	await _land(_player)
 	await _settle(2)
 	var before: float = _flat_distance_to(bot)
 	await _settle(70)
 	var after: float = _flat_distance_to(bot)
+	# Why a raider would *not* close is one of two things — it cannot pursue, or it is not
+	# chasing — and its own answers are cheaper than a hunt through the world for a haven that
+	# happens to sit on its fire.
 	_check(after < before - 0.4, "a raider closes on a player who comes close",
-		"%.1f m -> %.1f m" % [before, after])
+		"%.1f m -> %.1f m, may_pursue=%s state=%s speed=%.2f floor=%s at %s" % [
+			before, after, bot.call("_may_pursue"), bot.get("state"),
+			Vector2(bot.velocity.x, bot.velocity.z).length(), bot.is_on_floor(),
+			str(bot.global_position),
+		])
 
 	_player.call("warp_to", home + Vector3(70.0, 2.0, 0.0))
 	await _land(_player)
@@ -3805,7 +3887,10 @@ func _test_people() -> void:
 		for camp: Dictionary in camps.call("camps"):
 			if String(camp["name"]) == spared:
 				spared_camp = camp
-			elif control_camp.is_empty():
+			elif control_camp.is_empty() and _living_raider(_raiders_of(camp)) != null:
+				# A camp whose fires are *staffed*, not merely the next one on the list. The
+				# control exists to be the comparison, and the suite has killed raiders by
+				# now — a control with nobody standing at it compares nothing to nothing.
 				control_camp = camp
 		var spared_raiders: Array = _raiders_of(spared_camp)
 		var control_raiders: Array = _raiders_of(control_camp)
@@ -3867,9 +3952,14 @@ func _test_people() -> void:
 	# And the other half of the same decision: a burned camp has to still be burned after a
 	# relaunch, which is the part that needs the save rather than the conversation.
 	if camps != null:
+		# One with raiders still on their feet, for the same reason the control camp above is
+		# chosen that way: burning a camp whose raiders the suite has already killed burns
+		# nothing, and "15 -> 15" then reads as a broken decision rather than as a bad pick.
 		var target: Dictionary = {}
 		for camp: Dictionary in camps.call("camps"):
-			if String(camp["name"]) != PlayerData.decision_subject("camp"):
+			if String(camp["name"]) == PlayerData.decision_subject("camp"):
+				continue
+			if _living_raider(_raiders_of(camp)) != null:
 				target = camp
 				break
 		_check(not target.is_empty(), "a second camp to burn")
@@ -4887,7 +4977,16 @@ func _test_qi_pressure() -> void:
 	# that it reaches no further than it says.
 	var raiders: Array = get_tree().get_nodes_in_group("enemy")
 	if not raiders.is_empty():
-		var target: Node3D = raiders[0]
+		# One that is still breathing. Earlier sections kill raiders, a killed body's hp is
+		# already zero, and a field measured on a corpse reports 0.0 -> 0.0 — which reads as
+		# "the technique does no damage" rather than as "that one was already dead".
+		var target: Node3D = null
+		for candidate: Node3D in raiders:
+			if float(candidate.get("hp")) > 0.0:
+				target = candidate
+				break
+		if target == null:
+			target = raiders[0]
 		var kept: Vector3 = target.global_position
 		var kept_hp: float = float(target.get("hp"))
 		PlayerData.stats["qi"]["cap"] = 1000.0
@@ -5237,8 +5336,8 @@ func _test_slopes() -> void:
 				"found" if not climb.is_empty() else "none", candidates.size()])
 		return
 	var grade: float = absf(float(descent["step"])) / LANE
-	print("  info  steepest grade along the run direction: %.3f rise per metre over %.0f m" % [
-		grade, LANE])
+	print("  info  steepest grade along the run direction: %.3f rise per metre over %.0f m at (%.0f, %.0f)" % [
+		grade, LANE, float(descent["x"]), float(descent["z"])])
 	_check(grade > 0.02, "the map has real ground to run up and down",
 		"%.3f over %.0f m" % [grade, LANE])
 
@@ -5248,8 +5347,18 @@ func _test_slopes() -> void:
 	# lane can hold all of its descent in its last few metres and the body would then be
 	# credited with a drop it never made.
 	var down: Dictionary = await _run_grade(descent, forward)
-	print("  info  downhill: %.2f m covered, %.2f m dropped, airborne %d/%d frames" % [
-		down["travelled"], down["drop"], down["airborne"], down["frames"]])
+	print("  info  downhill: %.2f m covered, %.2f m dropped, airborne %d/%d frames, ended at (%.0f, %.0f)" % [
+		down["travelled"], down["drop"], down["airborne"], down["frames"],
+		down["end_x"], down["end_z"]])
+	if float(down["travelled"]) <= 6.0:
+		# A run that stops dead is either a slope the body cannot follow or a thing standing
+		# in front of it, and those want different fixes. Both are asked, at the height of a
+		# chest and of a knee, because a lane probe at eye level walks over a fence rail — and
+		# along the direction the body *actually* went, because a probe down the lane it was
+		# supposed to take says "nothing" about a body that took another one.
+		print("  info  the descent stopped after %.2f m at %.1f m/s (peak %.1f): %s; nothing blocked it (%s)" % [
+			down["travelled"], down["average"], down["peak"], _rooted_reasons(),
+			_blocked_by(_player.global_position, forward, 1.0)])
 	_check(float(down["travelled"]) > 6.0,
 		"a run downhill keeps moving rather than catching on the ground",
 		"%.2f m" % down["travelled"])
@@ -5262,8 +5371,15 @@ func _test_slopes() -> void:
 		"airborne %d of %d frames" % [down["airborne"], down["frames"]])
 
 	var up: Dictionary = await _run_grade(climb, forward)
-	print("  info  uphill: %.2f m covered, %.2f m climbed, airborne %d/%d frames" % [
-		up["travelled"], up["rise"], up["airborne"], up["frames"]])
+	print("  info  uphill: %.2f m covered, %.2f m climbed, airborne %d/%d frames, from (%.0f, %.0f) to (%.0f, %.0f), terrain %.2f -> %.2f" % [
+		up["travelled"], up["rise"], up["airborne"], up["frames"],
+		up["start_x"], up["start_z"], up["end_x"], up["end_z"],
+		up["rise"], float(_terrain.call("surface_height_at", up["end_x"], up["end_z"]))
+			- float(_terrain.call("surface_height_at", up["start_x"], up["start_z"]))])
+	if float(up["travelled"]) <= 6.0:
+		print("  info  the climb stopped after %.2f m at %.1f m/s (peak %.1f): %s; ahead %s" % [
+			up["travelled"], up["average"], up["peak"], _rooted_reasons(),
+			_blocked_by(_player.global_position, forward, 1.0)])
 	_check(float(up["travelled"]) > 6.0, "a run uphill keeps moving rather than stalling",
 		"%.2f m" % up["travelled"])
 	_check(float(up["rise"]) > 0.3, "and it really was uphill", "%.2f m" % up["rise"])
@@ -5289,17 +5405,34 @@ func _first_clear(candidates: Array, index: int, direction: int, forward: Vector
 	var i: int = index
 	var tried: int = 0
 	var blocked: int = 0
+	var tight: int = 0
 	var rough: int = 0
-	while i >= 0 and i < candidates.size() and tried < 60:
+	var walled: int = 0
+	# Two hundred and forty, because the *steepest* ground on a heightmap is a cliff face — and a
+	# cliff face passes none of these probes, being a wall. Sixty candidates was enough while the
+	# map was small; on this one the whole of the top of the order is rock.
+	while i >= 0 and i < candidates.size() and tried < 240:
 		var entry: Dictionary = candidates[i]
 		var spot := Vector3(float(entry["x"]), 0.0, float(entry["z"]))
 		spot.y = float(_terrain.call("surface_height_at", spot.x, spot.z)) + 0.9
-		var clear: bool = _lane_clear(spot, forward, lane + 4.0)
+		var ward: bool = _lane_crosses_closed_ward(spot, spot + forward * (lane + 6.0), 2.5)
+		var clear: bool = _lane_clear(spot, forward, lane + 4.0) \
+			and _lane_walkable(spot, forward, lane + 4.0)
+		# Rough ground is what a body *catches* on: a kerb, a ridge line, the shoulder of a road.
+		# None of it is an obstacle a ray will see, and all of it stops a run dead a few metres
+		# in — which is the one failure this section is about.
+		var smooth: bool = _lane_smooth(spot, forward, lane + 4.0, LANE_STEP)
+		var body_fits: bool = _lane_walkable(spot, forward, lane + 4.0)
 		var level: bool = _lane_ground_ok(spot, forward, lane) if require_level else clear
-		if clear and level:
+		clear = clear and body_fits and smooth
+		if clear and level and not ward:
 			return entry
-		if not clear:
+		if ward:
+			walled += 1
+		elif not clear:
 			blocked += 1
+			if smooth:
+				tight += 1
 		else:
 			rough += 1
 		i += direction
@@ -5307,13 +5440,108 @@ func _first_clear(candidates: Array, index: int, direction: int, forward: Vector
 	# A grade lane needs to be both unobstructed and roughly even over sixteen metres.
 	# Which of the two turned the candidates away is the difference between "the forest
 	# is in the way" and "this map has no long grade", so it is worth saying.
-	print("  info  no grade lane after %d candidates (%d obstructed, %d too uneven)" % [
-		tried, blocked, rough])
+	print("  info  no grade lane after %d candidates (%d obstructed, %d of them by something a ray misses, %d too uneven, %d into a ward)" % [
+		tried, blocked, tight, rough, walled])
 	return {}
+
+
+## The colliders a lane probe must look past: the ground the lane is drawn on, and the body
+## doing the walking. Everything else in the world is something the lane would run into.
+func _lane_ignore() -> Array:
+	var out: Array = []
+	if _terrain is CollisionObject3D:
+		out.append((_terrain as CollisionObject3D).get_rid())
+	return out
+
+
+## True when the ground under the lane is something a pair of legs can walk: no step between
+## one metre and the next larger than the body's own step-up. Terrain only, and cheap — it asks
+## the same function the world is built from rather than the physics world.
+func _lane_smooth(from: Vector3, dir: Vector3, depth: float, max_step: float) -> bool:
+	var last: float = float(_terrain.call("surface_height_at", from.x, from.z))
+	var at: Vector3 = from
+	var travelled: float = 0.0
+	while travelled < depth:
+		at += dir
+		travelled += 1.0
+		var here: float = float(_terrain.call("surface_height_at", at.x, at.z))
+		if absf(here - last) > max_step:
+			return false
+		last = here
+	return true
+
+
+## True when a *body* could walk the lane, not merely when a ray could pass through it.
+##
+## The ray in `_lane_clear` is infinitely thin and leaves the point it starts from, which makes
+## it wrong in exactly the two ways that matter here: a gap between two trunks is clear to a ray
+## and not to a shoulder, and a sample standing inside a trunk or a kerb face reports open
+## ground. The samples are asked with the game's own `spot_holds_a_body`, so "can a body stand
+## here" means the same thing to the suite as it does to a teleport.
+func _lane_walkable(from: Vector3, dir: Vector3, depth: float) -> bool:
+	if _player == null:
+		return true
+	var steps: int = int(ceil(depth / 2.0))
+	for i in steps + 1:
+		var at: Vector3 = from + dir * (2.0 * float(i))
+		# Two heights, because a body is a column and not a point. A village palisade is a
+		# metre and a half of fence: anything measured at chest or eye level sails over it,
+		# which is how a lane through a fence came to be called clear and then stopped a run
+		# four metres in, with nothing in front of it at any height a probe had been asked at.
+		for lift: float in [-0.55, 0.05]:
+			if not bool(_player.call(
+				"spot_holds_a_body", at + Vector3(0.0, lift, 0.0), _lane_ignore()
+			)):
+				return false
+	return true
+
+
+## True when a lane crosses a ward the body cannot walk through.
+##
+## The ward walls have no collision at all — they are drawn and then *push* a crossing body
+## back where it came from — so the ray in `_lane_clear` cannot see them. A lane chosen across
+## one measures a wall, and it does it in the most misleading way possible: the body travels a
+## few metres, stops dead, and the run reads as broken. This is the one obstacle in the world
+## that has to be asked for by name.
+func _lane_crosses_closed_ward(from: Vector3, to: Vector3, margin: float) -> bool:
+	var a: float = Vector2(from.x, from.z).length()
+	var b: float = Vector2(to.x, to.z).length()
+	var near: float = minf(a, b) - margin
+	var far: float = maxf(a, b) + margin
+	for gate in Wards.gate_count():
+		if Wards.is_open(gate):
+			continue
+		var at: float = Wards.radius_of(gate)
+		if at >= near and at <= far:
+			return true
+	return false
 
 
 ## One leg of a grade traverse. Returns how far the body got, how much height it
 ## gained or lost, and how much of the leg its feet were off the ground for.
+## Why a body that should be running is not, named rather than guessed at. Four different
+## systems can hold a character still — a trance, a drill, a collapse and a conversation — and
+## "the run stopped" looks identical from every one of them.
+func _rooted_reasons() -> String:
+	return "meditating=%s downed=%s training=%s talking=%s wanted=%s" % [
+		Cultivation.meditating, _player.call("is_downed"), Training.is_training(),
+		Story.talking(), Law.is_wanted(),
+	]
+
+
+## What stands in the way of a body running `dir` from `from`, asked at a given height above
+## its feet. The name, not the coordinate: a bare position says where the trouble is and never
+## what it is.
+func _blocked_by(from: Vector3, dir: Vector3, height: float) -> String:
+	var eye: Vector3 = from + Vector3(0.0, height, 0.0)
+	var query := PhysicsRayQueryParameters3D.create(eye, eye + dir * 6.0)
+	query.exclude = [_player.get_rid()]
+	var hit: Dictionary = _player.get_world_3d().direct_space_state.intersect_ray(query)
+	if hit.is_empty():
+		return "nothing"
+	return "%s at %.1f m" % [_describe_collider(hit.get("collider", null)), float(hit["position"].y)]
+
+
 func _run_grade(entry: Dictionary, forward: Vector3) -> Dictionary:
 	var spot := Vector3(float(entry["x"]), 0.0, float(entry["z"]))
 	spot.y = float(_terrain.call("surface_height_at", spot.x, spot.z)) + 0.9
@@ -5325,14 +5553,20 @@ func _run_grade(entry: Dictionary, forward: Vector3) -> Dictionary:
 	Input.action_press("move_forward")
 	Input.action_press("sprint")
 	var airborne: int = 0
+	var peak: float = 0.0
+	var total_speed: float = 0.0
 	for i in frames:
 		await _settle(1)
 		if not _player.is_on_floor():
 			airborne += 1
+		var flat_speed: float = Vector2(_player.velocity.x, _player.velocity.z).length()
+		peak = maxf(peak, flat_speed)
+		total_speed += flat_speed
 	_release_game_input()
 	await _settle(10)
 	var moved := Vector2(
 		_player.global_position.x - start.x, _player.global_position.z - start.z)
+	var travelled: float = moved.length()
 	var ended: float = _player.global_position.y
 	return {
 		"travelled": moved.length(),
@@ -5341,6 +5575,12 @@ func _run_grade(entry: Dictionary, forward: Vector3) -> Dictionary:
 		"airborne": airborne,
 		"frames": frames,
 		"seconds": float(frames) / 60.0,
+		"peak": peak,
+		"average": total_speed / float(frames),
+		"start_x": start.x,
+		"start_z": start.z,
+		"end_x": _player.global_position.x,
+		"end_z": _player.global_position.z,
 	}
 
 

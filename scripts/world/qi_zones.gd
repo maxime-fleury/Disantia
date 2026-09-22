@@ -135,6 +135,10 @@ func _sample(index: int, defn: Dictionary, band: Vector2,
 		var z: float = sin(angle) * reach
 		if Vector2(x, z).length() < camp_clearance:
 			continue
+		# Not on top of a village, and not on the tower's step: a zone is a patch of wild ground,
+		# and the whole point of the settlements is that they are the places it is not.
+		if Villages.near_site(x, z, 10.0):
+			continue
 		var too_close: bool = false
 		for other: Dictionary in _zones:
 			var centre: Vector3 = other["position"]

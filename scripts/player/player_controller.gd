@@ -729,10 +729,33 @@ func _update_downed(delta: float) -> void:
 func _respawn() -> void:
 	Cultivation.stop_meditation()
 	Training.stop()
-	var target: Vector3 = _spawn_point()
-	warp_to(target)
+	# Inside the tower there is no walk home. The body is put out at the door with a wound and the
+	# record it earned stands — the tower keeps the depth and the run is over, which is the whole
+	# cost of losing up there.
+	if Tower.inside():
+		Tower.died_inside()
+		var tower: Node = get_tree().get_first_node_in_group("tower_site")
+		if tower != null and tower.has_method("step_out"):
+			tower.call("step_out")
+		PlayerData.restore_all()
+		return
+	# The *nearest* sanctuary, not the only one. A body beaten two hundred metres out in the
+	# outer reach used to be walked all the way home, and walking is not a cost a game can
+	# charge for twice — the walk out there was the cost, and it was already paid.
+	warp_to(_wake_point())
 	PlayerData.restore_all()
-	PlayerData.log_message.emit("You wake at the camp, whole.", "info")
+	var where: String = "the camp"
+	var entry: Dictionary = Haven.nearest(global_position)
+	if not entry.is_empty() and String(entry["kind"]) == "village":
+		where = String(entry["name"])
+	PlayerData.log_message.emit("You wake in %s, whole." % where, "info")
+
+
+## Where a beaten body comes to. Separated from `_spawn_point` because the recall technique
+## really does mean *the fire* — a wayfaring art that dropped you in the nearest village
+## would be a different power.
+func _wake_point() -> Vector3:
+	return Haven.wake_point_for(global_position)
 
 
 ## Wayfaring: hold T, stand still, and come back to the fire.
@@ -749,7 +772,9 @@ func _update_recall(delta: float, rooted: bool) -> void:
 		_recall_progress = 0.0
 		_recall_blocked = false
 		return
-	if rooted or _recall_blocked:
+	# And not from inside the tower. A wayfaring art that reached out of the stair would be an
+	# escape from a run, which is the one thing a run cannot have.
+	if rooted or _recall_blocked or Tower.inside():
 		_recall_progress = 0.0
 		return
 	_recall_progress += delta
@@ -836,12 +861,10 @@ func take_enemy_blow(raw: float, source: Node3D = null) -> void:
 		velocity.y = maxf(velocity.y, 1.5 * knock)
 
 
-## True while the body is inside the camp wards, where nothing hunts it.
+## True while the body is inside a sanctuary — the camp or a village — where nothing hunts
+## it. One question to the registry rather than to the camp's own node, so a village counts.
 func in_safe_zone() -> bool:
-	var zone: Node = get_tree().get_first_node_in_group("safe_zone")
-	if zone == null or not zone.has_method("player_inside"):
-		return false
-	return bool(zone.call("player_inside"))
+	return Haven.contains(global_position)
 
 
 ## True while the body is down and refusing input.
@@ -997,7 +1020,56 @@ func _track_position(delta: float) -> void:
 
 
 ## Teleports the player, used by the world's ascend key.
+## Teleports the body, and makes sure the place it lands in can hold a body.
+##
+## Every teleport in the game — a death, a prison cell, a tower floor, the camp's fire — asks
+## for a *point*, and the world is full of points that are inside a tree trunk or a wall. A body
+## set down inside a solid has not merely landed in the wrong place: it cannot walk out of it,
+## so a routine respawn becomes a stuck session with nothing on screen to explain it. The spot
+## is asked about with a body-sized sphere and nudged to the nearest free ground beside it if
+## it is taken.
 func warp_to(target: Vector3) -> void:
-	global_position = target
+	global_position = _bearing_ground(target)
 	velocity = Vector3.ZERO
 	reset_fall_tracking()
+
+
+## `target` if a body fits there, otherwise the nearest offset that does. Near-first, so the
+## ordinary case — open ground — costs one shape query and no movement at all.
+func _bearing_ground(target: Vector3) -> Vector3:
+	if spot_holds_a_body(target):
+		return target
+	for ring: float in [0.6, 1.2, 1.9, 2.7]:
+		for i in 12:
+			var angle: float = TAU * float(i) / 12.0
+			var at := Vector3(
+				target.x + cos(angle) * ring, target.y, target.z + sin(angle) * ring
+			)
+			if spot_holds_a_body(at):
+				return at
+	return target
+
+
+## True when a body-shaped sphere standing on `at` can exist without touching anything. Public
+## so the suite and the world can ask the same question the teleport asks, rather than each
+## keeping a copy of "is this spot free".
+##
+## A *shape* rather than a ray, deliberately: a ray leaves the point it starts from, so a spot
+## inside a tree trunk reports clear ground and the walk that follows reads as broken movement.
+## `also_ignore` is for callers asking a narrower question than "may a body be set down here" —
+## a lane probe wants to know about *props*, and the ground it is standing on is not one of
+## them.
+func spot_holds_a_body(at: Vector3, also_ignore: Array = []) -> bool:
+	var space: PhysicsDirectSpaceState3D = get_world_3d().direct_space_state
+	if space == null:
+		return true
+	var params := PhysicsShapeQueryParameters3D.new()
+	var sphere := SphereShape3D.new()
+	sphere.radius = 0.35
+	params.shape = sphere
+	params.transform = Transform3D(Basis.IDENTITY, at + Vector3(0.0, 0.85, 0.0))
+	params.exclude = [get_rid()]
+	for rid in also_ignore:
+		params.exclude.append(rid)
+	params.collide_with_areas = false
+	return space.intersect_shape(params, 1).is_empty()

@@ -182,6 +182,24 @@ const DEFAULT_ABILITIES: Dictionary = {
 ## The one currency. Dropped by defeated raiders and handed out as a task reward,
 ## and a plain count because nothing about it grows or regenerates.
 var crystals: int = 0
+
+## How badly hurt this body came out of its last beatings, 0..WOUND_MAX. Each one makes the
+## next fight worse and heals slower, and none of them goes away on its own.
+##
+## This is what a death costs, and the shape of the cost is the whole argument. A three-minute
+## timer would have been the cheapest penalty to write and the worst to play: three minutes
+## of a game like this is eight fights, so the punishment for losing a fight would have been
+## to not play for a while. A wound is paid instead — in crystals at a village healer, in a
+## pill you carried, or in the five minutes of being worse at the game until you deal with it,
+## which is a bill with three ways to settle it rather than a wall you wait in front of.
+var wounds: int = 0
+## Above this a fourth death would stop being a setback and start being a spiral.
+const WOUND_MAX := 3
+## Damage taken per wound: a third more at three of them.
+const WOUND_DAMAGE_PER_STACK := 0.11
+## Regeneration taken away per wound, as a share of the plain rate.
+const WOUND_REGEN_SHARE := 0.22
+
 var abilities: Dictionary = DEFAULT_ABILITIES.duplicate(true)
 
 ## Scale applied to the whole interface, chosen in the settings panel. Fullscreen on
@@ -239,6 +257,25 @@ var _shop_consumed: bool = false
 var _loaded_wards: Dictionary = {}
 var _wards_consumed: bool = false
 
+## Every autoload added after the four above keeps its own progress, and this is the one list
+## of them.
+##
+## The older four each got their own block in *three* places — written, read, and handed off
+## during their own `_ready` — which is twelve lines of the save file's business per new
+## system, and a thing to forget. A module that follows the contract (`save_data()`, and a
+## `_ready` that opens with `PlayerData.take_loaded_module(key)`) is now saved and restored
+## without this file knowing what it holds. Keyed by save key, valued by the autoload's path.
+const SAVE_MODULES: Dictionary = {
+	"villages": "/root/Villages",
+	"law": "/root/Law",
+	"sky": "/root/Sky",
+	"tower": "/root/Tower",
+	"forge": "/root/Forge",
+	"bounties": "/root/Bounties",
+}
+var _loaded_modules: Dictionary = {}
+var _modules_consumed: Dictionary = {}
+
 
 func _ready() -> void:
 	_build_defaults()
@@ -268,10 +305,24 @@ func _notification(what: int) -> void:
 			save_game()
 
 
+## True while the body is inside the tower, where nothing gives anything back.
+##
+## Asked by node path rather than read off the autoload identifier, so a project that ever drops
+## the tower still loads its saves. The rule it carries is the whole design of the climb: no
+## trance, no mending, no qi — so the only health on floor sixty is the health carried up, and
+## depth becomes a resource instead of a distance.
+func in_tower() -> bool:
+	var tower: Node = get_node_or_null("/root/Tower")
+	return tower != null and bool(tower.call("inside"))
+
+
 func _process(delta: float) -> void:
 	# The clock behind Mending. Nothing else in the file counts up; everything else counts
 	# down from a deadline.
 	_since_hurt += delta
+	if in_tower():
+		_autosave(delta)
+		return
 	for id: String in RESOURCE_REGEN:
 		if id == "qi" and suppress_qi_regen:
 			continue
@@ -286,12 +337,24 @@ func _process(delta: float) -> void:
 		var rate: float = float(RESOURCE_REGEN[id])
 		if id == "hp":
 			rate *= regen_multiplier()
+		# A charm speeds the breath, a wound slows everything. Applied here rather than
+		# folded into either multiplier because this loop is the only place either rate is
+		# actually used, and a modifier that lives at the point of use cannot be forgotten
+		# by a caller that reads the multiplier for the panel.
+		rate *= gear_regen_share(id) * wound_regen_multiplier()
 		entry["current"] = minf(cap, float(entry["current"]) + cap * rate * delta)
+	_autosave(delta)
+
+
+## Kept separate because the tower returns before the regeneration loop and a run that skipped
+## the autosave would lose an hour of climbing to a crash.
+func _autosave(delta: float) -> void:
 	_autosave_accum += delta
-	if _autosave_accum >= AUTOSAVE_SECONDS:
-		_autosave_accum = 0.0
-		if _dirty:
-			save_game()
+	if _autosave_accum < AUTOSAVE_SECONDS:
+		return
+	_autosave_accum = 0.0
+	if _dirty:
+		save_game()
 
 
 # ---------------------------------------------------------------- setup / defs
@@ -1119,7 +1182,7 @@ func damage_multiplier() -> float:
 ## by it means a breakthrough makes your fists heavier rather than merely making
 ## practice more efficient. `skill` is the per-strike variation (a lucky angle).
 func strike_damage(skill: float = 1.0) -> float:
-	return get_cap("attack") * skill * gain_coefficient
+	return get_cap("attack") * skill * gain_coefficient * strike_share()
 
 
 ## Applies raw damage, grants the HP/DEFENSE training xp that comes from getting
@@ -1145,7 +1208,7 @@ func apply_damage(raw: float, kind: String = "blow") -> float:
 		)
 			Audio.play("ui_toggle", -6.0, 0.8)
 			return 0.0
-	var dealt: float = raw * damage_multiplier()
+	var dealt: float = raw * damage_multiplier() * incoming_share()
 	if melee:
 		dealt *= melee_multiplier()
 	var entry: Dictionary = stats["hp"]
@@ -1344,9 +1407,94 @@ func remember_position(pos: Vector3) -> void:
 	_dirty = true
 
 
+# ---------------------------------------------------------------- wounds and gear
+
+## One more wound, up to the cap. Returns whether it took, so a caller can tell a death that
+## cost something from one that did not.
+func add_wound() -> bool:
+	if wounds >= WOUND_MAX:
+		return false
+	wounds += 1
+	_dirty = true
+	log_message.emit(
+		"WOUNDED ×%d — blows land %d%% harder, the body mends %d%% slower. A healer, a pill, "
+			% [wounds, int((wound_damage_multiplier() - 1.0) * 100.0),
+				int((1.0 - wound_regen_multiplier()) * 100.0)]
+			+ "or a spell at a spirit zone closes it.",
+		"damage"
+	)
+	stats_changed.emit()
+	return true
+
+
+func clear_wound() -> bool:
+	if wounds <= 0:
+		return false
+	wounds -= 1
+	_dirty = true
+	log_message.emit(
+		"A wound closes.%s" % ("" if wounds == 0 else " %d still open." % wounds), "gain"
+	)
+	stats_changed.emit()
+	return true
+
+
+func clear_wounds() -> void:
+	if wounds <= 0:
+		return
+	wounds = 0
+	_dirty = true
+	stats_changed.emit()
+
+
+func wounded() -> bool:
+	return wounds > 0
+
+
+func wound_damage_multiplier() -> float:
+	return 1.0 + WOUND_DAMAGE_PER_STACK * float(wounds)
+
+
+func wound_regen_multiplier() -> float:
+	return clampf(1.0 - WOUND_REGEN_SHARE * float(wounds), 0.2, 1.0)
+
+
+## The Forge, if the world has one. Gear is worn as a *share of the body's own numbers*, so
+## the body is the one doing the multiplying — which is what stops a sword from ever making
+## the training yard pointless. `null` before the autoload exists, and every caller below
+## treats that as "nothing worn".
+func _forge() -> Node:
+	return get_node_or_null("/root/Forge")
+
+
+## What this body's blows are multiplied by, weapons and elixirs together.
+func strike_share() -> float:
+	var forge: Node = _forge()
+	if forge == null or not forge.has_method("strike_multiplier"):
+		return 1.0
+	return float(forge.call("strike_multiplier")) * float(forge.call("attack_tonic"))
+
+
+## And what arriving blows are multiplied by: armour, wards and the state of the body.
+func incoming_share() -> float:
+	var forge: Node = _forge()
+	var gear: float = 1.0
+	if forge != null and forge.has_method("damage_taken_multiplier"):
+		gear = float(forge.call("damage_taken_multiplier")) * float(forge.call("ward_tonic"))
+	return gear * wound_damage_multiplier()
+
+
+func gear_regen_share(stat_id: String) -> float:
+	var forge: Node = _forge()
+	if forge == null or not forge.has_method("regen_multiplier_for"):
+		return 1.0
+	return float(forge.call("regen_multiplier_for", stat_id))
+
+
 func save_game() -> bool:
 	var payload: Dictionary = {
 		"version": SAVE_VERSION,
+		"wounds": wounds,
 		"gain_coefficient": gain_coefficient,
 		"stats": stats,
 		"allocated": allocated,
@@ -1372,6 +1520,10 @@ func save_game() -> bool:
 	var wards: Node = get_node_or_null("/root/Wards")
 	if wards != null and wards.has_method("save_data"):
 		payload["wards"] = wards.call("save_data")
+	for key: String in SAVE_MODULES:
+		var module: Node = get_node_or_null(String(SAVE_MODULES[key]))
+		if module != null and module.has_method("save_data"):
+			payload[key] = module.call("save_data")
 
 	var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if file == null:
@@ -1481,6 +1633,15 @@ func load_game() -> bool:
 	if typeof(saved_wards) == TYPE_DICTIONARY:
 		_loaded_wards = saved_wards
 	_wards_consumed = false
+
+	wounds = clampi(int(data.get("wounds", 0)), 0, WOUND_MAX)
+
+	_loaded_modules.clear()
+	_modules_consumed.clear()
+	for key: String in SAVE_MODULES:
+		var saved_module: Variant = data.get(key, {})
+		if typeof(saved_module) == TYPE_DICTIONARY:
+			_loaded_modules[key] = saved_module
 	stats_changed.emit()
 	return true
 
@@ -1523,6 +1684,16 @@ func take_loaded_wards() -> Dictionary:
 	return _loaded_wards
 
 
+## The same hand-off, for anything added later. Taken once, by the module itself, during its
+## own `_ready` — the order the autoloads ready in is not something either side should have to
+## know about.
+func take_loaded_module(key: String) -> Dictionary:
+	if bool(_modules_consumed.get(key, false)):
+		return {}
+	_modules_consumed[key] = true
+	return _loaded_modules.get(key, {})
+
+
 ## Wipes progression and deletes the save. Bound to a button in the HUD so the
 ## loop can be replayed from scratch.
 func reset_progress() -> void:
@@ -1540,6 +1711,9 @@ func reset_progress() -> void:
 	_wards_consumed = true
 	_loaded_cultivation = {}
 	_cultivation_consumed = true
+	_loaded_modules.clear()
+	_modules_consumed.clear()
+	wounds = 0
 	has_saved_position = false
 	saved_position = Vector3.ZERO
 	_dirty = false

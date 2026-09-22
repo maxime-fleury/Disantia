@@ -176,6 +176,11 @@ func all_complete() -> bool:
 func report(kind: String, amount: float) -> void:
 	if amount <= 0.0:
 		return
+	# The villages' chains listen on the same wire. Every system that already knows a fact
+	# reports it once — metres run, a raider down, a place found — and the elder's chain and
+	# a village's chain are two readers of the same event rather than two pollers of the
+	# world. Anything that arrives here arrives there, with no second call site to forget.
+	Villages.report(kind, amount)
 	var task: Dictionary = current()
 	if task.is_empty() or String(task["kind"]) != kind:
 		return
