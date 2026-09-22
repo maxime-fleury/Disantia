@@ -151,6 +151,127 @@ const DECISIONS: Dictionary = {
 		],
 		"after": "\"Road's long. I will be seeing you on it.\"",
 	},
+
+	# ------------------------------------------------------------- the first hour
+	#
+	# The six events of `EVENTS`, in the order `Prologue` tells them. Each one is a *moment* with a
+	# price, and the price is nearly always reputation — because reputation is the only number in
+	# this game that is paid back later, in a cheaper shelf, a watch that looks the other way, or a
+	# gate that will not open. That delay is the whole design: nothing here is a "buff" and a
+	# player who picks the greedy option six times will not find out for another hour, in a village
+	# where the merchant has stopped smiling and the price has quietly gone up.
+	"gate": {
+		# The caption over each scene. Not a name, because there is nobody speaking — the line is
+		# the *place*, and "The gate · " over it is how the player is told that what is talking is
+		# the world rather than a person, without a second widget to say so.
+		"speaker": "The gate",
+		"open": "The gate is a wall with a man in front of it. \"You are not from here. State "
+			+ "your business, or walk the road round.\"",
+		"options": [
+			{
+				"key": "trade", "label": "I am a cultivator, and I am here to trade",
+				"blurb": "They mark you down as a guest. Hollowmere is better disposed to you.",
+				"effect": {"kind": "rep", "amount": 4, "reason": "you announced yourself"},
+			},
+			{
+				"key": "nothing", "label": "I am nobody, and I am passing through",
+				"blurb": "A gate is happier with a nobody, and nobody is glad to see you.",
+				"effect": {"kind": "rep", "amount": -2, "reason": "you would not say"},
+			},
+		],
+		"after": "He steps aside, and writes something in the book by the gate.",
+	},
+	"caravan": {
+		"speaker": "The bend in the road",
+		"open": "A cart sits on its side where the road bends, one wheel still turning. The driver "
+			+ "is under it, and the crates are spilled where they fell.",
+		"options": [
+			{
+				"key": "help", "label": "Get the cart off him",
+				"blurb": "He will remember the face. The villages hear about it first.",
+				"effect": {"kind": "rep", "amount": 6, "reason": "you pulled a driver out"},
+			},
+			{
+				"key": "loot", "label": "Take the crates and go",
+				"blurb": "+40 crystals, and the road learns what your hands are for.",
+				"effect": {"kind": "crystals", "amount": 40},
+			},
+		],
+		"after": "The road is quiet again, and the wheel stops turning.",
+	},
+	"notice": {
+		"speaker": "The crossroads",
+		"open": "There is a paper nailed to the post at the crossroads, and it is *you*: a face "
+			+ "badly drawn, a name you have never used, and a price under it.",
+		"options": [
+			{
+				"key": "tear", "label": "Tear it down",
+				"blurb": "Nobody sees it happen. Somebody always does.",
+				"effect": {"kind": "crime", "crime": "arrogance", "detail": "A notice taken off its post"},
+			},
+			{
+				"key": "leave", "label": "Leave it hanging",
+				"blurb": "Let them read a description that is not you. The village notices you did not.",
+				"effect": {"kind": "rep", "amount": 3, "reason": "the notice was left alone"},
+			},
+		],
+		"after": "Somewhere behind the wall a bell rings twice, which is nothing at all.",
+	},
+	"mark": {
+		"speaker": "The stone you passed",
+		"open": "Scratched into the stone you walked past earlier, low down where a hand would "
+			+ "reach: nine strokes, and one of them crossed out. It was not there this morning.",
+		"options": [
+			{
+				"key": "touch", "label": "Put your hand on it",
+				"blurb": "QI cap permanently +24. Whatever it is, it knows your hand now.",
+				"effect": {"kind": "cap", "stat": "qi", "amount": 24.0},
+			},
+			{
+				"key": "turn", "label": "Walk on and do not look back",
+				"blurb": "DEFENSE cap permanently +8. Some invitations are answered by declining.",
+				"effect": {"kind": "cap", "stat": "defense", "amount": 8.0},
+			},
+		],
+		"after": "The stone is cold, and the cold does not leave your hand.",
+	},
+	"tally": {
+		"speaker": "The cart of pots",
+		"open": "A woman with a cart of pots takes one look at your shoes, your hands and your "
+			+ "belt, and names a price before you have asked for anything. \"Or you can owe me.\"",
+		"options": [
+			{
+				"key": "pay", "label": "Pay what she asks, and walk on",
+				"blurb": "She marks you down as a customer who pays. That is worth more than it sounds.",
+				"effect": {"kind": "rep", "amount": 4, "reason": "you paid the asking price"},
+			},
+			{
+				"key": "owe", "label": "Take the credit",
+				"blurb": "+55 crystals now. The debt is the villages' business, not hers.",
+				"effect": {"kind": "rep", "amount": -5, "reason": "you took credit and walked"},
+			},
+		],
+		"after": "She writes it down either way. Everyone here writes everything down.",
+	},
+	"oath": {
+		"speaker": "The road, at the end of the first day",
+		"open": "Three villages, one road, and a tower at the end of it that has been standing "
+			+ "there longer than any of them. They will ask you, sooner or later, what you came for.",
+		"options": [
+			{
+				"key": "villages", "label": "The people on the road",
+				"blurb": "Every village takes you more seriously. The tower will not care.",
+				"effect": {"kind": "rep", "amount": 6, "village": "all",
+					"reason": "word of what you came for"},
+			},
+			{
+				"key": "tower", "label": "The top of the tower",
+				"blurb": "ATTACK cap permanently +10, and no village will thank you for it.",
+				"effect": {"kind": "cap", "stat": "attack", "amount": 10.0},
+			},
+		],
+		"after": "The road does not answer. It has heard it before.",
+	},
 }
 
 ## Places that speak. A door is not a person and does not pretend to be one — but the tower's
@@ -169,6 +290,60 @@ const DOOR_REFUSED := "The door does not move. It is waiting for a body with mor
 ## table's closed choices, and `kind` — "decision" or "menu" — which is what tells `choose`
 ## which of the two flows it is answering.
 var _conversation: Dictionary = {}
+
+## The scripted events of the first hour, in the order they are told.
+##
+## These are the same machinery as a conversation — the same panel, the same two options, the same
+## record of what was chosen — with one thing missing: a *speaker*. The first hour of this game is
+## not six people talking, it is six things happening to a body that has just arrived: a watchman
+## who will not let it in, a caravan on its side on the road, a notice with its own description on
+## it, a mark on a wall it has already walked past. Nobody's name is over any of them, which is
+## exactly what makes them read as a world rather than as a cast.
+##
+## `Prologue` decides *when* each one happens; this file only knows what they say.
+const EVENTS: Array = ["gate", "caravan", "notice", "mark", "tally", "oath"]
+
+
+## Opens a scripted event by id, if it has not already happened and its gate is open. The same
+## door as `begin`, so the panel, the record and the effects cannot tell the difference.
+func begin_event(id: String) -> Dictionary:
+	if not EVENTS.has(id) or decided(id) or not gate_open(id):
+		return {}
+	var spec: Dictionary = DECISIONS.get(id, {})
+	if spec.is_empty():
+		return {}
+	var options: Array = []
+	for option: Dictionary in (spec["options"] as Array):
+		options.append({
+			"key": String(option["key"]),
+			"label": String(option["label"]),
+			"blurb": String(option["blurb"]),
+		})
+	if options.is_empty():
+		return {}
+	var line: String = String(spec["open"])
+	var voice: String = String(spec.get("voice", ""))
+	if voice != "":
+		Voice.speak(voice)
+	_conversation = {
+		"speaker": String(spec.get("speaker", "")),
+		"role": "",
+		"line": line,
+		"options": options,
+		"decision": id,
+	}
+	talking_changed.emit()
+	conversation_changed.emit()
+	return _conversation
+
+
+## The events still ahead of this body, so the prologue's director can be told what to wait for.
+func events_done() -> int:
+	var done: int = 0
+	for id: String in EVENTS:
+		if decided(id):
+			done += 1
+	return done
 
 
 ## True while somebody is being spoken to. The controller reads this to root the body.
@@ -346,9 +521,26 @@ func choose(key: String) -> Dictionary:
 ## The name of the thing an effect is about, which is what makes the decision re-appliable to
 ## a world rebuilt from scratch at the next launch. Empty for effects about the body itself.
 func subject_for(effect: Dictionary) -> String:
-	if String(effect.get("kind", "")) != "camp":
+	match String(effect.get("kind", "")):
+		"camp":
+			return _nearest_camp_name()
+		"rep", "crime":
+			# Which village the choice was about, if the effect did not name one. Recorded with the
+			# decision for the same reason the camp's name is: the place it happened is the half of
+			# the choice the player can walk back to and look at.
+			if String(effect.get("village", "nearest")) != "nearest":
+				return String(effect.get("village", ""))
+			return _nearest_village_id()
+	return ""
+
+
+## The village the body is standing in the reach of, for a decision whose subject is "this place".
+func _nearest_village_id() -> String:
+	var player: Node3D = get_tree().get_first_node_in_group("player") as Node3D
+	if player == null:
 		return ""
-	return _nearest_camp_name()
+	var entry: Dictionary = Villages.nearest_to(player.global_position)
+	return String(entry.get("id", ""))
 
 
 ## Applies one effect. Every branch here has to be visible from outside the save file, or the
@@ -365,6 +557,24 @@ func apply(effect: Dictionary, subject: String = "") -> void:
 				shop.call("set_discount", float(effect["amount"]))
 		"camp":
 			_resolve_camp(String(effect["choice"]), subject)
+		"rep":
+			# Reputation, as an *effect* rather than as a reward: which is the whole point of the
+			# first hour. A village that trusts you charges you less, a village that hates you puts
+			# its watch on you — so a line of dialogue that moves this number is a line of dialogue
+			# with a price on it, however long it takes to be paid.
+			var amount: int = int(effect.get("amount", 0))
+			var reason: String = String(effect.get("reason", "something you said"))
+			if String(effect.get("village", "nearest")) == "all":
+				for entry: Dictionary in Villages.all():
+					Villages.adjust_rep(String(entry["id"]), amount, reason)
+			elif subject != "":
+				Villages.adjust_rep(subject, amount, reason)
+		"crime":
+			# The other half of the same idea: a choice can also be *against the law*, and the law
+			# is per village and remembered for days.
+			if subject != "":
+				Law.add_crime(String(effect.get("crime", "trouble")), subject,
+					String(effect.get("detail", "")))
 
 
 ## The camp decision, which is the one the player can walk out and look at. The nearest camp

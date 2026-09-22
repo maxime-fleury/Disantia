@@ -536,6 +536,9 @@ func _spawn_wave(depth: int, second: bool) -> void:
 		EnemyFactory.configure(enemy, hp, float(plan_here["damage"]), int(plan_here["crystals"]),
 			spot, tint, 26.0, 40.0, bolts)
 		enemy.set("respawn_seconds", INF)
+		# The band's trick. Placed by the band rather than rolled per body, because the point is
+		# that a floor is *recognisable*: the Iron Galleries are the ones that come apart.
+		enemy.set("trick", Tower.trick_for_band(band))
 		if String(plan_here["rule"]) == "swift":
 			enemy.set("chase_speed", 5.4 * scale)
 		enemy.position = local + Vector3(0.0, 0.2, 0.0)
@@ -550,6 +553,7 @@ func _spawn_wave(depth: int, second: bool) -> void:
 		)
 		boss.set("display_name", String(plan_here["boss_name"]))
 		boss.set("respawn_seconds", INF)
+		boss.set("trick", Tower.trick_for_band(band))
 		boss.position = Vector3(0.0, 0.2, -arena * 0.4)
 		_floor_root.add_child(boss)
 		_enemies.append(boss)

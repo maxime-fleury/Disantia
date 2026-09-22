@@ -147,10 +147,23 @@ func add_crime(kind: String, village_id: String, detail: String = "") -> void:
 			step = 1
 		_:
 			step = 1
+	# A village that thinks well of you takes one rung off, once. This is what "trusted" is *for*:
+	# the shelves get cheaper, which is a number, and the watch gives a body the benefit of the
+	# doubt, which is a *scene* — the same crime that would have the gate shut on you in a village
+	# that has never heard of you is a warning in one that calls you kin. It is not absolution:
+	# the rung after that is bought at the full price.
+	if step > 0 and Villages.rep_of(village_id) >= int(Villages.REP_STEPS[2]):
+		step -= 1
 	var now: int = mini(MAX_SEVERITY, before + step)
 	if now == before:
 		return
 	severity[village_id] = now
+	# And the ladder runs both ways: breaking a village's law costs its opinion of you, which is
+	# what makes the two systems one system. Prices follow reputation (`price_factor`), and
+	# reputation follows the law, so a body that robs its way down the valley eventually finds the
+	# shelves closed to it — not because anything was scripted to close them, but because it stops
+	# being welcome.
+	Villages.adjust_rep(village_id, -step * 2, "and you broke its law")
 	last_crime = kind
 	PlayerData.mark_dirty()
 	var village_name: String = String(Villages.def(village_id).get("name", village_id))

@@ -199,6 +199,11 @@ func _run() -> void:
 	await _test_world_state_line()
 	await _test_interact_prompt()
 	await _test_voice()
+	await _test_music()
+	await _test_hollow()
+	await _test_fate()
+	await _test_tricks()
+	await _test_prologue()
 	await _test_language()
 	# Before the save round trip rather than early in the run: this section changes the world
 	# itself — a camp's raiders are spared and another camp is burned — and every test that
@@ -244,6 +249,26 @@ func _reset_state() -> void:
 	Cultivation.reset()
 	Quests.reset()
 	Wards.reset()
+	# The hour, reset to the clock's own default rather than inherited from the save file.
+	#
+	# This is not tidiness, it is the difference between a suite that measures the game and one
+	# that measures *when the player last played it*: the sun points downward only during the day,
+	# a spirit zone is worth a third more at night, and a save left at half past eight in the
+	# evening failed two checks in a run that had passed an hour earlier with the same code. A
+	# suite whose result depends on the clock is a suite whose failures cannot be trusted either.
+	Clock.reset()
+	Cultivation.zone_boost = 1.0
+	Cultivation.zone_name = ""
+	# The prologue's director, switched off for the duration.
+	#
+	# It fires a scene the first time the body comes near a village, a camp or a road — which is
+	# most of what this suite does to the body, dozens of times, over the whole map. A scene opens
+	# the dialogue panel, and a conversation *roots the body*: fifty-four checks failed in one run
+	# because a panel was open during the locomotion, the bolt and the landmark sections, and every
+	# failure was in a system that had not changed. Its own section switches it back on and drives
+	# the scenes directly, which is the only honest way to check when a story fires.
+	Prologue.enabled = false
+	Prologue.reset()
 	# ...and every ward is opened for the rest of the run.
 	#
 	# The suite warps the body all over the map — to the farthest spirit zone, to far ground,
@@ -551,6 +576,12 @@ func _test_meditation_drain() -> void:
 	if not landed:
 		return
 
+	# The trance's throughput is multiplied by the spirit zone it is sitting in, so a check of
+	# "the cost is what it claims" that happens to run inside one is a check of the zone instead.
+	# Stated here rather than left to the last section that moved the body: the claim is about the
+	# base cost, so the zone multiplier is pinned out of the way.
+	Cultivation.zone_boost = 1.0
+	Cultivation.zone_name = ""
 	PlayerData.stats["qi"]["current"] = PlayerData.get_cap("qi")
 	PlayerData.stats["hp"]["current"] = PlayerData.get_cap("hp") * 0.5
 	var qi_before: float = PlayerData.get_value("qi")
@@ -7386,6 +7417,710 @@ func _test_voice() -> void:
 	Voice.set_enabled(true)
 	_check(int(Voice.save_data()["enabled"]) == 1, "and the choice is what gets written down")
 	Voice.stop()
+
+
+## The soundtrack, which is the cheapest change in this whole project and the one with the
+## quietest failure mode.
+##
+## A region whose bed was never rendered is a *silent* region — and the game was silent
+## everywhere, so silence is exactly what the bug this exists to fix looks like. There is no
+## error, no missing texture, nothing on screen: you walk into a town and the music simply is
+## not there, and the only way to notice is to have played it before. So the first claim is
+## that every bed the code can name is a file, resolved through the same table the game reads.
+func _test_music() -> void:
+	_section("Music")
+	var themes: Array = []
+	var missing: Array = []
+	for region: String in Music.REGIONS:
+		for night in [false, true]:
+			var theme: String = Music.theme_for(region, night)
+			if not themes.has(theme):
+				themes.append(theme)
+			if not ResourceLoader.exists(Music.DIR + theme + ".ogg"):
+				missing.append(theme)
+	_check(missing.is_empty(), "every region and hour has a bed on disk",
+		"%d of %d missing: %s" % [missing.size(), themes.size(), ", ".join(missing)])
+	_check(themes.size() >= 5, "and the map is not one loop played everywhere",
+		"%d beds: %s" % [themes.size(), ", ".join(themes)])
+
+	# Night is a *different* bed, which is the whole reason the mapping is a table of two columns
+	# rather than a theme per region: a day loop under a starry sky is the difference between a
+	# world with hours in it and a world with a skybox. The tower is the exception, and it is the
+	# exception on purpose — a stone room does not care what the sun is doing.
+	_check(Music.theme_for("village", false) != Music.theme_for("village", true),
+		"the town at midnight is not the town at noon",
+		"%s / %s" % [Music.theme_for("village", false), Music.theme_for("village", true)])
+	_check(Music.theme_for("tower", false) == Music.theme_for("tower", true),
+		"while a stone room sounds the same whatever the hour")
+	# A region nobody registered falls back to the valley rather than to nothing. Places will be
+	# added; a place that forgets to say where it is should be quiet about being wrong, not mute.
+	_check(Music.theme_for("somewhere_that_does_not_exist", false) == Music.FALLBACK,
+		"and an unknown place still gets a bed", Music.theme_for("nowhere", false))
+
+	# A bed that does not loop is worse than no bed at all: the silence arrives in the middle of a
+	# fight, eighty-eight seconds in, and looks like a bug in the mixer. The importer defaults to
+	# one-shot, so this is set at load time — and "at load time" is a claim worth checking.
+	var unlooped: Array = []
+	for theme: String in themes:
+		var stream: AudioStream = Music.load_bed(theme)
+		if not _loops(stream):
+			unlooped.append(theme)
+	_check(unlooped.is_empty(), "and every one of them loops",
+		"%d not looping: %s" % [unlooped.size(), ", ".join(unlooped)])
+
+	# The fade, walked rather than waited out. Two claims, and the middle one is the reason the
+	# fade is a number in `_process` instead of a tween: a tween would pass a test by existing,
+	# whereas here both beds are measurably audible halfway through and only one is at the end.
+	Music.set_enabled(true)
+	Music.set_duck(1.0)
+	Music.set_region("valley")
+	Music.advance(Music.FADE + 0.1)
+	var started: int = Music.switches
+	Music.set_region("village")
+	_check(Music.switches == started + 1, "walking into a town starts the town's bed")
+	Music.advance(Music.FADE * 0.5)
+	var halfway: Array = [Music.gain(0), Music.gain(1)]
+	_check(float(halfway[0]) > 0.05 and float(halfway[1]) > 0.05,
+		"with both beds audible in the middle of the change rather than a gap between two songs",
+		"%.2f / %.2f" % [halfway[0], halfway[1]])
+	Music.advance(Music.FADE)
+	# Which of the two players is live is the implementation's business, and a check that assumed
+	# a slot would break the day the fade is rewritten while the music kept working. The claim is
+	# about the *mix*: one bed up, one bed down, nothing in between.
+	var loud: float = maxf(Music.gain(0), Music.gain(1))
+	var faint: float = minf(Music.gain(0), Music.gain(1))
+	_check(loud > 0.99 and faint < 0.01,
+		"and only the new one at the end of it", "%.2f / %.2f" % [loud, faint])
+	_check(Music.current_theme() == Music.theme_for("village", Clock.is_night()),
+		"and it is the town's bed that is up", Music.current_theme())
+	# The director asks once a second forever, so asking twice has to be free. If it were not, the
+	# soundtrack of a village would be a bed restarting every second, which sounds like a stutter.
+	var settled: int = Music.switches
+	Music.set_region("village")
+	_check(Music.switches == settled and maxf(Music.gain(0), Music.gain(1)) > 0.99,
+		"and asking for the region already playing does not restart it",
+		"%d switches" % Music.switches)
+
+	# Where the game says the body is. Read through the director — the node that actually does the
+	# asking — rather than by re-implementing its rules here, which is how a test passes while the
+	# game does something else.
+	var director: Node = _player.get_parent().get_node_or_null("MusicDirector")
+	_check(director != null, "the world has a director to answer that question")
+	if director == null:
+		return
+	var home: Vector3 = _terrain.call("spawn_point", 0.5) as Vector3
+	_check(String(director.call("region_at", home)) == "valley", "the home camp is the valley",
+		String(director.call("region_at", home)))
+	var village: Dictionary = Villages.nearest_to(home)
+	var inside: Dictionary = Haven.site(String(village.get("id", "")))
+	if not inside.is_empty():
+		var at: Vector3 = inside["centre"] as Vector3
+		_check(String(director.call("region_at", at)) == "village",
+			"standing in a village is that village's music",
+			"%s at %s" % [String(director.call("region_at", at)), at])
+	# Interiors win. The tower is forced open rather than climbed, because this claim is about the
+	# *order* of the checks and not about whether the climb worked — that is a different section.
+	var deepest: int = Tower.current
+	Tower.current = 3
+	_check(String(director.call("region_at", home)) == "tower",
+		"and a floor of the tower is the tower, wherever it was built",
+		String(director.call("region_at", home)))
+	Tower.current = deepest
+
+	# The panel. A soundtrack with no level is a soundtrack people turn off entirely.
+	var index: int = AudioServer.get_bus_index(Music.BUS)
+	_check(index != -1 and index != 0,
+		"the music has its own bus, so the master slider is not the only control")
+	var slider: HSlider = _find_by_name(_hud, "MusicVolume") as HSlider
+	_check(slider != null, "the settings panel has a music level")
+	if slider != null and index != -1:
+		slider.value = 0.2
+		var quiet: float = AudioServer.get_bus_volume_db(index)
+		slider.value = 0.8
+		_check(AudioServer.get_bus_volume_db(index) > quiet + 1.0,
+			"and moving it reaches the mixer rather than only the label",
+			"%.1f dB then %.1f dB" % [quiet, AudioServer.get_bus_volume_db(index)])
+		_check(slider.max_value <= 1.0 and slider.min_value >= 0.0,
+			"with no setting louder than the mix was built for")
+	var off: Button = _find_by_name(_hud, "Music1") as Button
+	_check(off != null, "and a switch to turn it off")
+	if off != null:
+		off.emit_signal("pressed")
+		Music.advance(Music.FADE)
+		_check(not Music.enabled, "which the panel can actually press")
+		_check(Music.gain(0) <= 0.0 and Music.gain(1) <= 0.0,
+			"and off means silence rather than a quieter bed",
+			"%.2f / %.2f" % [Music.gain(0), Music.gain(1)])
+		Music.set_enabled(true)
+
+	# Both audio switches have to be *remembered*, and one of them was not: `Voice` opened by
+	# reading a save section that `SAVE_MODULES` has no key for, so the voices came back on and at
+	# full volume every session whatever the player chose. The machinery was right; the one line
+	# that makes it real was missing, and nothing anywhere said so.
+	for key: String in ["music", "voice"]:
+		_check(PlayerData.SAVE_MODULES.has(key),
+			"the %s setting survives a restart" % key,
+			"no `%s` key in SAVE_MODULES" % key)
+	_check(Music.save_data().has("volume") and Music.save_data().has("enabled"),
+		"and the music hands the save its whole state")
+
+	Music.set_volume(0.65)
+	Music.set_duck(1.0)
+	Music.set_region("valley")
+	Music.advance(Music.FADE + 0.1)
+
+
+## The Hollow: the one place in the valley the sky does not reach, and the whole reason the lamp
+## exists.
+##
+## Four claims, and each one is a thing that could silently stop being true. It stands far enough
+## out to be a journey; walking into it tells the *clock* it is dark, which is what makes the lamp
+## strike; the body is blind in there without one and strikes for half; and walking out gives the
+## world back exactly as it was found.
+func _test_hollow() -> void:
+	_section("The Hollow")
+	var cave: Node3D = get_tree().get_first_node_in_group("cave") as Node3D
+	_check(cave != null, "there is a hollow in the rock")
+	if cave == null:
+		return
+	var summary: Dictionary = cave.call("summary") as Dictionary
+	var at: Vector3 = summary["at"]
+	# A journey rather than a neighbour: past the first ward, which is the wall the elder's chain
+	# opens. A hollow inside it is a hollow a player walks into before they own the object it is
+	# about, and the room then teaches nothing.
+	var out: float = Vector2(at.x, at.z).length()
+	_check(out > Wards.radius_of(0), "and it stands beyond the first ward",
+		"%.0f m out, ward 0 ends at %.0f m" % [out, Wards.radius_of(0)])
+	_check(out < float(_terrain.call("extent")) * 0.72, "but not on the rim of the world",
+		"%.0f m" % out)
+	# Clear of everything else that is already standing somewhere. A rock dome dropped on a beacon
+	# is a site buried under a hill, and the symptom is a missing reward.
+	var crowded: String = ""
+	for group: String in ["landmark", "tower_site"]:
+		for node: Node in get_tree().get_nodes_in_group(group):
+			if node is not Node3D or node == cave:
+				continue
+			var away: Vector3 = (node as Node3D).global_position - at
+			if Vector2(away.x, away.z).length() < float(summary["interior"]):
+				crowded = "%s at %.0f m" % [node.name, Vector2(away.x, away.z).length()]
+	_check(crowded == "", "and nothing else is standing inside the hill", crowded)
+
+	# The mouth is a way in, not part of the room: `contains` is a flat circle, so a body at the
+	# lintel has to be *outside* it or the dark would begin a step early and the music would change
+	# while you were still on the road.
+	var mouth: Vector3 = cave.call("mouth_point") as Vector3
+	_check(not bool(cave.call("contains", mouth)), "the way in is outside the room")
+	_check(bool(cave.call("contains", at + Vector3(0.0, 1.0, 0.0))),
+		"and the middle of it is the middle of it")
+
+	var camera: Camera3D = _player.get_node_or_null("CameraRig/SpringArm3D/Camera3D") as Camera3D
+	var kept: Vector3 = _player.global_position
+	var floor_before: float = Clock.darkness_floor
+	var sky_environment: Environment = camera.environment if camera != null else null
+	var crystals_before: int = PlayerData.crystals
+	var found_before: int = PlayerData.found_landmarks.size()
+
+	# In.
+	_player.call("warp_to", at + Vector3(0.0, 1.5, 0.0))
+	await _settle(2)
+	cave.call("poll", 1.0)
+	_check(bool(cave.call("summary")["inside"]), "walking in puts the body in the room")
+	_check(Clock.darkness_floor >= 1.0,
+		"and the place tells the clock it is dark, whatever the hour",
+		"%.2f of a floor" % Clock.darkness_floor)
+	_check(Clock.darkness() >= 0.99, "so the world agrees: this is night",
+		"%.2f" % Clock.darkness())
+	if camera != null:
+		_check(camera.environment != null,
+			"and the camera stops rendering the sky at all")
+
+	# The dwellers are built on the way in rather than at load: four bodies standing about in a dark
+	# room are four bodies that can be heard from the road.
+	_check(int(cave.call("summary")["dwellers"]) >= 3,
+		"and what lives in there was asleep until somebody walked in",
+		"%d dwellers" % int(cave.call("summary")["dwellers"]))
+
+	# The blind rule, measured through the one function every blow goes through. The same seed for
+	# both, so the roll and the crush are identical and the only difference is the dark.
+	PlayerData.unlit = true
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 4242
+	var blind: float = PlayerData.strike_damage_rolled(rng)
+	rng.seed = 4242
+	PlayerData.unlit = false
+	var seeing: float = PlayerData.strike_damage_rolled(rng)
+	_check(_near(seeing, blind * 2.0, 0.02),
+		"a strike in the dark lands for half, and not for nothing",
+		"%.1f blind against %.1f sighted" % [blind, seeing])
+
+	# The stone. The prompt is *proximity*, so a body in the room is not automatically at the slab —
+	# that is the whole of the gate, and without a light it is a gate nobody passes.
+	var taken: Dictionary = cave.call("take") as Dictionary
+	_check(not taken.is_empty(), "the stone on the slab can be taken")
+	var prize_crystals: int = int(taken.get("crystals", 0))
+	_check(PlayerData.crystals == crystals_before + prize_crystals and prize_crystals > 0,
+		"and it pays crystals", "%d then %d" % [crystals_before, PlayerData.crystals])
+	_check(not (taken.get("boons", []) as Array).is_empty(),
+		"and something permanent moves", str(taken.get("boons", [])))
+	_check(PlayerData.found_landmarks.has("hollow"),
+		"and the place is written down as emptied, in the list the nine sites use",
+		str(PlayerData.found_landmarks))
+	_check(PlayerData.found_landmarks.size() == found_before + 1,
+		"with no second entry for walking back in")
+	_check((cave.call("take") as Dictionary).is_empty(), "and taking it twice is a no")
+	_check(String(cave.call("interact_prompt")) == "",
+		"so the prompt stops offering it")
+
+	# Out.
+	_player.call("warp_to", kept)
+	await _settle(2)
+	cave.call("poll", 1.0)
+	_check(not bool(cave.call("summary")["inside"]), "walking out puts the body back in the world")
+	_check(_near(Clock.darkness_floor, floor_before, 0.001),
+		"and the hour gets the sky back exactly as it was", "%.2f" % Clock.darkness_floor)
+	_check(not PlayerData.unlit, "with the body sighted again")
+	if camera != null:
+		_check(camera.environment == sky_environment,
+			"and the camera looking at the world rather than at the inside of a rock")
+	_check(int(summary["entrances"]) < int(cave.call("summary")["entrances"]),
+		"and both entrances were noticed",
+		"%d entrances" % int(cave.call("summary")["entrances"]))
+
+	# The map says where it is, and what to bring. It is the one mark on the map that answers a
+	# question about gear rather than about danger, and a destination nobody knows about is a
+	# feature nobody uses.
+	var marks: Array = _map_marks()
+	_check(not marks.is_empty(), "and the map draws it")
+	if not marks.is_empty():
+		_check(bool(marks[0]["taken"]), "with the stone marked off it once it is gone",
+			str(marks[0]))
+
+
+## What losing costs, which used to be the same silence everywhere on the map.
+##
+## The rule is that the body is found by whoever is nearest, so what this checks is that the four
+## parties exist, are told apart by *position*, and cost what they claim: the watch takes you in
+## and keeps your purse, a raider takes half of it, a villager takes nothing and closes a wound,
+## and nobody takes you home.
+func _test_fate() -> void:
+	_section("Who finds the body")
+	var home: Vector3 = _terrain.call("spawn_point", 0.5) as Vector3
+	var empty: Vector3 = Vector3.ZERO
+	for i in 16:
+		var angle: float = TAU * float(i) / 16.0
+		var probe := Vector3(cos(angle), 0.0, sin(angle)) * 120.0
+		if String((Fate.outcome_at(probe) as Dictionary)["kind"]) == "road":
+			empty = probe
+			break
+	_check(empty != Vector3.ZERO, "there is open country where nobody would come across you")
+	_check(String(Fate.outcome_at(empty)["kind"]) == "road",
+		"and falling there costs the walk home and nothing else")
+
+	# The raider camps are the one party that takes. Checked against the camps the world actually
+	# built, so the reach is measured against real ground rather than a number copied from the file.
+	var camps: Node = _player.get_parent().get_node_or_null("EnemyCamps")
+	if camps != null and camps.has_method("camps"):
+		var list: Array = camps.call("camps")
+		if not list.is_empty():
+			var at: Vector3 = (list[0] as Dictionary)["position"]
+			_check(String(Fate.outcome_at(at)["kind"]) == "robbed",
+				"falling at a raider camp means a raider goes through your purse",
+				String(Fate.outcome_at(at)["kind"]))
+
+	# Villages, both halves of the law: the same place, two different people finding you. That
+	# contrast is the whole design — the safe ground is where a beating is worth having, unless
+	# you are the reason the watch is out.
+	var village_id: String = ""
+	var inside := Vector3.ZERO
+	for entry: Dictionary in Villages.all():
+		var site: Dictionary = Haven.site(String(entry["id"]))
+		if site.is_empty():
+			continue
+		village_id = String(entry["id"])
+		inside = site["centre"] as Vector3
+		break
+	_check(village_id != "", "there is a village to be found outside of")
+	if village_id != "":
+		var healed: Dictionary = Fate.outcome_at(inside)
+		_check(String(healed["kind"]) == "healer",
+			"a villager is sent for when you fall on a village road",
+			"%s at %s" % [String(healed["kind"]), inside])
+		var severity_before: Dictionary = Law.severity.duplicate(true)
+		Law.add_crime("assault", village_id, "the self-test")
+		var caught: Dictionary = Fate.outcome_at(inside)
+		_check(String(caught["kind"]) == "cell" and String(caught["village"]) == village_id,
+			"and a watchman, if you are wanted there",
+			"%s" % String(caught["kind"]))
+		# The cell has to be a real room, or being caught quietly turns into being walked home.
+		_check(int((Law.summary() as Dictionary)["cells"]) > 0,
+			"the watch house is behind a real door", str(Law.summary()))
+		Law.severity = severity_before
+
+	# Each outcome's *price*, measured through the event rather than the decision. The player is
+	# put where the outcome happens and read back afterwards.
+	var kept_position: Vector3 = _player.global_position
+	var crystals_before: int = PlayerData.crystals
+	var wounds_before: int = PlayerData.wounds
+	var counts_before: int = _fate_total()
+	PlayerData.add_crystals(80)
+	var richer: int = PlayerData.crystals
+	if camps != null and camps.has_method("camps") and not (camps.call("camps") as Array).is_empty():
+		var camp_at: Vector3 = ((camps.call("camps") as Array)[0] as Dictionary)["position"]
+		_player.call("warp_to", camp_at)
+		await _settle(1)
+		var robbed: Dictionary = Fate.found(camp_at)
+		_check(String(robbed["kind"]) == "robbed", "a raider is what finds you at a camp")
+		_check(PlayerData.crystals < richer and PlayerData.crystals > 0,
+			"who takes half the purse rather than all of it",
+			"%d then %d" % [richer, PlayerData.crystals])
+		# The wiring, and the reason it is checked at all: the tower's door was built, tested and
+		# unreachable because nothing on the path a player takes ever called it. A rule that only
+		# the suite calls is not a rule.
+		_player.call("warp_to", empty)
+		await _settle(1)
+		_player.call("_respawn")
+		await _settle(1)
+		_check(_fate_total() == counts_before + 2,
+			"and the respawn path really does go through this decision rather than round it",
+			"%d recorded" % _fate_total())
+	PlayerData.crystals = crystals_before
+	PlayerData.wounds = wounds_before
+	_player.call("warp_to", kept_position)
+	await _settle(1)
+
+
+## What a raider can do besides swing. Three tricks, and the claims that matter about each:
+## that the tower and the camps only ever name tricks that exist, that a shield halves what lands
+## until it breaks and nothing after, and that a volatile body reaches beyond itself when it dies.
+func _test_tricks() -> void:
+	_section("What a raider can do")
+	var known: Array = preload("res://scripts/enemy/enemy.gd").TRICKS
+	# Every band of the tower, checked against the list of tricks that exist. A band naming a
+	# trick nobody wrote is not an error anywhere — it is a floor that is quietly an ordinary
+	# raider, which is the failure this table can have and the hardest one to notice.
+	var unknown: Array = []
+	for band in Tower.BANDS.size():
+		var trick: String = Tower.trick_for_band(band)
+		if trick != "" and not known.has(trick):
+			unknown.append("band %d: %s" % [band, trick])
+	_check(unknown.is_empty(), "every floor of the tower names a trick that exists",
+		", ".join(unknown))
+	var worn: Dictionary = {}
+	for band in Tower.BANDS.size():
+		var trick: String = Tower.trick_for_band(band)
+		if trick != "":
+			worn[trick] = int(worn.get(trick, 0)) + 1
+	_check(worn.size() == known.size(),
+		"and all of them are worn somewhere up there", "%s" % str(worn.keys()))
+	_check(Tower.trick_for_band(0) == "",
+		"while the floors that teach the tower are bare", Tower.trick_for_band(0))
+
+	var factory: GDScript = load("res://scripts/enemy/enemy_factory.gd")
+	var at: Vector3 = _player.global_position + Vector3(6.0, 0.5, 0.0)
+	var made: Array = []
+
+	# The shield. Two claims: what lands while it holds, and that it *breaks* rather than absorbing
+	# forever — a trick that never ends is not a trick, it is a health multiplier with a colour.
+	var shielded: CharacterBody3D = factory.make(1.0, "")
+	shielded.set("trick", "shield")
+	shielded.set("max_hp", 1000.0)
+	shielded.set("home", at)
+	shielded.position = at
+	_player.get_parent().add_child(shielded)
+	made.append(shielded)
+	_check(shielded.call("trick_tag") != "", "a shielded raider says so over its head")
+	var pool: float = float(shielded.call("shield_left"))
+	_check(pool > 0.0, "and is carrying one", "%.0f" % pool)
+	var through: float = float(shielded.call("take_hit", 200.0, at + Vector3(1.0, 0.0, 0.0)))
+	_check(_near(through, 100.0, 0.01), "a blow lands for half while the shield holds",
+		"%.1f of 200" % through)
+	var hit: int = 0
+	while float(shielded.call("shield_left")) > 0.0 and hit < 20:
+		shielded.call("take_hit", 200.0, at + Vector3(1.0, 0.0, 0.0))
+		hit += 1
+	_check(int(shielded.get("broken_shields")) == 1,
+		"and the shield gives rather than lasting forever", "%d blows" % hit)
+	var after: float = float(shielded.call("take_hit", 200.0, at + Vector3(1.0, 0.0, 0.0)))
+	_check(_near(after, 200.0, 0.01), "after which a blow lands for what it is worth",
+		"%.1f of 200" % after)
+
+	# The volatile one. It hands its last blow to whoever is standing in it, so the end of the
+	# fight is part of the fight — and the player is the body the claim is about.
+	var volatile: CharacterBody3D = factory.make(1.0, "")
+	volatile.set("trick", "ember")
+	volatile.set("max_hp", 40.0)
+	volatile.set("attack_damage", 20.0)
+	volatile.set("home", at)
+	volatile.position = at
+	_player.get_parent().add_child(volatile)
+	made.append(volatile)
+	_player.call("warp_to", at + Vector3(1.6, 0.4, 0.0))
+	await _settle(2)
+	var hp_before: float = PlayerData.get_value("hp")
+	volatile.call("take_hit", 400.0, at + Vector3(0.5, 0.0, 0.0))
+	await _settle(2)
+	_check(PlayerData.get_value("hp") < hp_before,
+		"a volatile body takes whoever is close with it",
+		"%.1f then %.1f" % [hp_before, PlayerData.get_value("hp")])
+
+	# A body with no trick is a body with nothing to say about it: the plate is for the ones the
+	# player has to read before the fight, not for every raider in the valley.
+	var plain: CharacterBody3D = factory.make(1.0, "")
+	plain.set("max_hp", 100.0)
+	plain.set("home", at)
+	plain.position = at
+	_player.get_parent().add_child(plain)
+	made.append(plain)
+	_check(String(plain.call("trick_tag")) == "" and float(plain.call("shield_left")) == 0.0,
+		"and an ordinary raider is still an ordinary raider")
+
+	for body: Node in made:
+		if is_instance_valid(body):
+			body.queue_free()
+	await _settle(2)
+	PlayerData.restore_all()
+
+
+## The first hour: six scenes, in order, each one a question with a price that is paid later.
+##
+## The thing worth checking is not that the prose exists — it is the four rules the director is:
+## that the hour is a *sequence*, so a scene that is not the next one cannot fire however ready it
+## looks; that there is a pause between them; that every scene opens through the same door a
+## conversation does, with the place named over it; and that the price is real, which here means
+## reputation and the law, because those are the two numbers in this game that are paid back
+## hours after they move.
+func _test_prologue() -> void:
+	_section("The first hour")
+	Prologue.enabled = false
+	Prologue.reset()
+
+	# Every scene is written, and both of its answers cost something.
+	var unwritten: Array = []
+	var free: Array = []
+	for id: String in Story.EVENTS:
+		var spec: Dictionary = Story.DECISIONS.get(id, {})
+		if spec.is_empty():
+			unwritten.append(id)
+			continue
+		for option: Dictionary in (spec["options"] as Array):
+			if not option.has("effect") or String(option.get("blurb", "")) == "":
+				free.append("%s/%s" % [id, String(option.get("key", "?"))])
+			if String(option.get("label", "")) == "" or String(option.get("key", "")) == "":
+				free.append("%s (unlabelled)" % id)
+	_check(Story.EVENTS.size() >= 6, "the hour is six scenes", "%d" % Story.EVENTS.size())
+	_check(unwritten.is_empty(), "and every one of them is written", ", ".join(unwritten))
+	_check(free.is_empty(), "with a price on every answer to every one of them", ", ".join(free))
+
+	# Everything this section moves, put back at the end. The suite is allowed to walk through the
+	# first hour; it is not allowed to charge the rest of the run for it.
+	var kept_decisions: Dictionary = PlayerData.decisions.duplicate(true)
+	var kept_rep: Dictionary = Villages.reputation.duplicate(true)
+	var kept_severity: Dictionary = Law.severity.duplicate(true)
+	var kept_landmarks: Array = PlayerData.found_landmarks.duplicate()
+	var kept_caps: Dictionary = _caps_now()
+	var kept_crystals: int = PlayerData.crystals
+	var kept_tier: int = Cultivation.tier
+	var kept_refinement: int = Cultivation.refinement
+	var kept_position: Vector3 = _player.global_position
+	PlayerData.decisions.clear()
+
+	var village_id: String = ""
+	var walls := Vector3.ZERO
+	for entry: Dictionary in Villages.all():
+		var site: Dictionary = Haven.site(String(entry["id"]))
+		if site.is_empty():
+			continue
+		village_id = String(entry["id"])
+		walls = site["centre"] as Vector3
+		break
+	var camp_at := Vector3.ZERO
+	var camps: Node = _player.get_parent().get_node_or_null("EnemyCamps")
+	if camps != null and camps.has_method("camps") and not (camps.call("camps") as Array).is_empty():
+		camp_at = ((camps.call("camps") as Array)[0] as Dictionary)["position"]
+	var road_at := Vector3.ZERO
+	var roads: Array = _terrain.call("roads") as Array
+	if not roads.is_empty():
+		var points: PackedVector2Array = (roads[0] as Dictionary)["points"]
+		var middle: Vector2 = points[points.size() / 2]
+		road_at = Vector3(middle.x, 0.0, middle.y)
+
+	# The sequence. The gate is first and has not been told, so a body standing at a raider camp
+	# must be offered *nothing*: the hour is a story, not a set of triggers, and every scene after
+	# the first one is waiting for the one before it to have happened.
+	if camp_at != Vector3.ZERO:
+		_player.call("warp_to", camp_at)
+		await _settle(1)
+		_check(Prologue.next_scene() == "",
+			"with the gate untold, standing at a camp is not a scene", Prologue.next_scene())
+
+	# The gate, at the walls.
+	_player.call("warp_to", walls)
+	await _settle(1)
+	_check(Prologue.next_scene() == "gate", "at the walls, the watchman speaks first",
+		Prologue.next_scene())
+	# The other two villages are given something to lose, so the rivalry has something to bite on.
+	var others: Array = []
+	for entry: Dictionary in Villages.all():
+		var other: String = String(entry["id"])
+		if other == village_id:
+			continue
+		Villages.reputation[other] = 6
+		others.append(other)
+	var rep_before: int = Villages.rep_of(village_id)
+	_check(Prologue.fire("gate"), "and the scene opens")
+	var opened: Dictionary = Story.conversation()
+	_check(String(opened.get("speaker", "")) != "",
+		"with the place named over it rather than a person", String(opened.get("speaker", "")))
+	_check(Story.options().size() == 2, "asking two things",
+		"%d answers" % Story.options().size())
+	Story.choose("trade")
+	Story.close()
+	_check(Villages.rep_of(village_id) > rep_before,
+		"answering it moves what the village thinks of you",
+		"%d then %d" % [rep_before, Villages.rep_of(village_id)])
+	# And the other two think slightly less of you, which is the whole reason a choice here is a
+	# choice: the road is short and there is only one set of shelves in each town.
+	var cooled: String = ""
+	for other: String in others:
+		if Villages.rep_of(other) >= 6:
+			cooled = "%s still at %d" % [other, Villages.rep_of(other)]
+	_check(cooled == "", "while the other two cool by a point", cooled)
+
+	# The pause. A scene answered should not be followed by the next one on the same breath.
+	Prologue.scene_closed()
+	_check(Prologue.next_scene() == "", "and then the hour waits before the next scene")
+
+	# The rest of the hour, driven the way the game drives it: the body is put where the scene
+	# happens, and then the director is *ticked*. Nothing here calls `fire` for the middle four —
+	# the scene firing by itself, off the world state and the clock, is the claim.
+	if camp_at != Vector3.ZERO:
+		_player.call("warp_to", camp_at)
+		await _settle(1)
+	for i in 40:
+		Prologue.poll(1.0)
+	_check(String(_scene_on_screen()) == "caravan",
+		"the cart on the road comes next, and comes on its own", _scene_on_screen())
+	var crystals_before: int = PlayerData.crystals
+	Story.choose("loot")
+	Story.close()
+	Prologue.scene_closed()
+	_check(PlayerData.crystals == crystals_before + 40,
+		"and the answer that takes instead of giving pays in crystals",
+		"%d then %d" % [crystals_before, PlayerData.crystals])
+
+	# The notice, and the wire the whole hour is built on: a choice that is *against the law* has to
+	# move the law, and the law has to move the village's opinion — otherwise the price is a line in
+	# a JSON blob and nothing else.
+	Prologue.approaches = 2
+	for i in 40:
+		Prologue.poll(1.0)
+	_check(String(_scene_on_screen()) == "notice", "then the notice with your own face on it",
+		_scene_on_screen())
+	var severity_before: int = Law.wanted_at(village_id)
+	var rep_before_crime: int = Villages.rep_of(village_id)
+	Story.choose("tear")
+	Story.close()
+	Prologue.scene_closed()
+	_check(Law.wanted_at(village_id) > severity_before,
+		"and tearing it down is a crime in that village",
+		"%d then %d" % [severity_before, Law.wanted_at(village_id)])
+	_check(Villages.rep_of(village_id) < rep_before_crime,
+		"which the village holds against you, because the two ladders are one ladder",
+		"%d then %d" % [rep_before_crime, Villages.rep_of(village_id)])
+
+	# Somewhere the body has already been, the Ninth has been too. The moment is a *discovery*, so
+	# the scene waits for one rather than for a coordinate.
+	PlayerData.mark_landmark_found("circle")
+	var qi_cap: float = PlayerData.get_cap("qi")
+	for i in 40:
+		Prologue.poll(1.0)
+	_check(String(_scene_on_screen()) == "mark", "the mark waits for somewhere you have been",
+		_scene_on_screen())
+	Story.choose("touch")
+	Story.close()
+	Prologue.scene_closed()
+	_check(PlayerData.get_cap("qi") > qi_cap, "and the hand on the stone widens the dantian",
+		"%.1f then %.1f" % [qi_cap, PlayerData.get_cap("qi")])
+
+	# A road, which is neither of the two kinds of place the map has.
+	if road_at != Vector3.ZERO:
+		_player.call("warp_to", road_at)
+		await _settle(1)
+	for i in 40:
+		Prologue.poll(1.0)
+	_check(String(_scene_on_screen()) == "tally", "then a cart of pots, on a road",
+		_scene_on_screen())
+	Story.choose("pay")
+	Story.close()
+	Prologue.scene_closed()
+
+	# And the last one waits for the body to have *decided* something: a breakthrough.
+	Cultivation.tier = 1
+	for i in 40:
+		Prologue.poll(1.0)
+	_check(String(_scene_on_screen()) == "oath", "and the last one waits for a breakthrough",
+		_scene_on_screen())
+	Story.choose("villages")
+	Story.close()
+	_check(Prologue.scenes_done() == Story.EVENTS.size(),
+		"after which the hour is over and does not start again",
+		"%d of %d" % [Prologue.scenes_done(), Story.EVENTS.size()])
+	_check(Prologue.next_scene() == "", "and nothing is left to tell")
+
+	# Every one of the six is now a fact of the save, which is what stops a loaded game telling the
+	# hour a second time.
+	var remembered: int = 0
+	for id: String in Story.EVENTS:
+		if PlayerData.decisions.has(id):
+			remembered += 1
+	_check(remembered == Story.EVENTS.size(), "and every scene is written down as decided",
+		"%d of %d" % [remembered, Story.EVENTS.size()])
+
+	PlayerData.decisions = kept_decisions
+	Villages.reputation = kept_rep
+	Law.severity = kept_severity
+	PlayerData.found_landmarks = kept_landmarks
+	_restore_caps(kept_caps)
+	PlayerData.crystals = kept_crystals
+	Cultivation.tier = kept_tier
+	Cultivation.refinement = kept_refinement
+	_player.call("warp_to", kept_position)
+	await _settle(1)
+
+
+## The decision id of whatever scene is on the panel, or "" when nothing is.
+func _scene_on_screen() -> String:
+	var talk: Dictionary = Story.conversation()
+	if talk.is_empty():
+		return ""
+	return String(talk.get("decision", ""))
+
+
+func _fate_total() -> int:
+	var total: int = 0
+	for kind: String in Fate.counts:
+		total += int(Fate.counts[kind])
+	return total
+
+
+## The minimap's own data for the hollow, read through the map rather than recomputed here.
+func _map_marks() -> Array:
+	if _hud == null or not _hud.has_method("map_view"):
+		return []
+	var view: Node = _hud.call("map_view") as Node
+	if view == null or not view.has_method("cave_marks"):
+		return []
+	return view.call("cave_marks") as Array
+
+
+func _loops(stream: AudioStream) -> bool:
+	if stream == null:
+		return false
+	if stream is AudioStreamOggVorbis:
+		return (stream as AudioStreamOggVorbis).loop
+	if stream is AudioStreamWAV:
+		return (stream as AudioStreamWAV).loop_mode != AudioStreamWAV.LOOP_DISABLED
+	return false
 
 
 ## The techniques a body has actually attained, by name. Read off the same rows the panel shows,

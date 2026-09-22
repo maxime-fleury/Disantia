@@ -25,6 +25,7 @@ var _safe: Node3D
 var _player: Node3D
 var _elder: Node3D
 var _landmarks: Node
+var _cave: Node
 
 ## Colours, in one place so the map and its legend agree.
 ##
@@ -54,6 +55,9 @@ const COL_TOWER := Color("dce4f2")
 ## A zone you have not reached the stage for still has to be on the map — knowing
 ## something is out there and out of reach is the reason to keep cultivating.
 const LOCKED_ALPHA := 0.42
+## The Hollow. The one mark on this map that is a *hole* rather than a place: drawn as a dark
+## disc with no fill, because what it says is "there is nothing to see in here".
+const COL_CAVE := Color("b48cff")
 
 var _refresh_accum: float = 0.0
 var _reported: bool = false
@@ -97,6 +101,7 @@ func _resolve() -> void:
 		_player = get_tree().get_first_node_in_group("player") as Node3D
 	_elder = get_tree().get_first_node_in_group("quest_npc") as Node3D
 	_landmarks = world.get_node_or_null("Landmarks")
+	_cave = world.get_node_or_null("Cave")
 
 
 func _process(delta: float) -> void:
@@ -151,6 +156,7 @@ func _draw() -> void:
 	_draw_camps()
 	_draw_tower()
 	_draw_landmarks()
+	_draw_caves()
 	_draw_elder()
 	_draw_player()
 	_draw_compass()
@@ -302,6 +308,40 @@ func village_marks() -> Array:
 			"raided": raided == village_id,
 		})
 	return out
+
+
+## The Hollow, as a dark disc: the one place on this map that is drawn as an absence.
+##
+## It is on the map from the first minute, unlike the nine sites, and that is the point of the
+## difference: those are *discoveries* and this is a *destination*. Knowing a hole in the rock
+## exists on the far side of the valley is what sends a player to a merchant for a lamp, and a
+## tool nobody knows to want is a tool that never gets bought. The ring around it is how far its
+## roof reaches, which is the one thing about it the map can honestly say.
+func _draw_caves() -> void:
+	for mark: Dictionary in cave_marks():
+		var at: Vector2 = mark["at"]
+		draw_circle(at, float(mark["radius"]), Color(0.02, 0.02, 0.04, 0.72))
+		draw_arc(at, float(mark["radius"]), 0.0, TAU, 30, Color(COL_CAVE, 0.75), 1.3, true)
+		if bool(mark["taken"]):
+			draw_circle(at, 2.0, Color(COL_FOUND, 0.9))
+		else:
+			draw_arc(at, 2.6, 0.0, TAU, 16, Color(COL_CAVE, 0.95), 1.4, true)
+
+
+## What the cave marks are about to be, as data — the same reason `village_marks` exists.
+func cave_marks() -> Array:
+	if _cave == null or not _cave.has_method("summary"):
+		return []
+	var summary: Dictionary = _cave.call("summary") as Dictionary
+	if summary.is_empty():
+		return []
+	var at: Vector3 = summary["at"]
+	return [{
+		"at": _to_map(Vector2(at.x, at.z)),
+		"radius": _px_per_metre() * float(summary["interior"]),
+		"taken": bool(summary["taken"]),
+		"inside": bool(summary["inside"]),
+	}]
 
 
 ## The tower, as a spire: a triangle and a mast, so it is legible at four pixels and readable
@@ -468,6 +508,17 @@ func _px_per_metre() -> float:
 ## The full name, not a bare noun. "wards" against a cyan ring is a guess for a player who
 ## has not read the help strip; "camp wards (safe)" is not, and the legend is the one place
 ## with room for it.
+func cave_note() -> String:
+	if _cave == null or not _cave.has_method("summary"):
+		return ""
+	var summary: Dictionary = _cave.call("summary") as Dictionary
+	if summary.is_empty():
+		return ""
+	if bool(summary["taken"]):
+		return "emptied"
+	return "you will need a light"
+
+
 func legend() -> Array:
 	var elder_note: String = "a reward is waiting" if elder_reward_waiting() else ""
 	var counts: Vector2i = landmark_counts()
@@ -497,6 +548,9 @@ func legend() -> Array:
 			"note": "%d floors, deepest %d" % [Tower.FLOORS, Tower.deepest]},
 		{"color": COL_ELDER, "text": "The elder", "note": elder_note},
 		{"color": COL_FOUND, "text": "Site you found", "note": site_note},
+		# One row for the Hollow, and it earns its place: it is the only mark on the map that
+		# answers a question about *gear* rather than about danger.
+		{"color": COL_CAVE, "text": "The Hollow", "note": cave_note()},
 	]
 	# The wards, one row per gate, and the one you are working towards is the bright one.
 	# Named with the realm that opens it, because that is the entire question the wall poses.

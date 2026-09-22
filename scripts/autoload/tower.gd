@@ -166,6 +166,25 @@ func band_of(depth: int) -> Dictionary:
 	return BANDS[clampi((depth - 1) / 10, 0, BANDS.size() - 1)]
 
 
+## The trick the bodies of a band have, if any.
+##
+## Bands are this game's one long progression and until now the only thing that changed between
+## them was a colour and a health multiplier: floor forty was floor four with bigger numbers.
+## One trick per band, cycling through the three an enemy can have, is the cheapest way to make a
+## hundred floors read as a *climb* rather than as arithmetic — and it is placed rather than
+## rolled, so the second time the player meets the Ash Landing they know what is standing on it.
+##
+## The first band is deliberately bare: its floors are the ones that teach the tower itself, and
+## a trick introduced before the stairs are learned is a trick learned as a health bar.
+## `enemy.TRAITS` is the list of what actually exists; the suite checks this table against it, so
+## a band that names a trick nobody wrote is a failure rather than an ordinary raider.
+const TRICK_CYCLE: Array = ["", "shield", "ember", "blood"]
+
+
+func trick_for_band(band: int) -> String:
+	return String(TRICK_CYCLE[posmod(band, TRICK_CYCLE.size())])
+
+
 func band_index(depth: int) -> int:
 	return clampi((depth - 1) / 10, 0, BANDS.size() - 1)
 

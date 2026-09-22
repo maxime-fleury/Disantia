@@ -39,6 +39,14 @@ const RINGS: Array = [
 		"hp": 2.40, "damage": 22.0, "crystals": 8},
 ]
 
+## What the raiders of a ring can do, beyond swinging. One trick per ring, in the same order the
+## tower wears them, and the first ring is bare — a raider that shields itself is a lesson about
+## the *fight*, and ring 0 is where the fight itself is still being learned.
+##
+## Worth the three lines: without it the four rings are the same raider standing on different
+## ground, so the outer camps are a longer walk to the same evening.
+const TRICK_BY_RING: Array = ["", "shield", "blood", "ember"]
+
 ## Hit points of a plain raider in ring 0, before the ring's multiplier.
 const RAIDER_HP := 55.0
 const RAIDER_ATTACK_XP := 26.0
@@ -358,6 +366,7 @@ func _spawn_raider(centre: Vector3, offset: Vector2, ring: int, root: Node3D) ->
 	enemy.set("attack_damage", float(spec["damage"]))
 	enemy.set("crystals", int(spec["crystals"]))
 	enemy.set("attack_xp", RAIDER_ATTACK_XP)
+	enemy.set("trick", String(TRICK_BY_RING[clampi(ring, 0, TRICK_BY_RING.size() - 1)]))
 	enemy.set("home", centre + local)
 	enemy.position = local
 	root.add_child(enemy)
@@ -394,6 +403,9 @@ func _spawn_champion(centre: Vector3, ring: int, warden: Dictionary,
 	enemy.set("leash_radius", 34.0)
 	enemy.set("give_up_radius", 34.0)
 	enemy.set("respawn_seconds", INF)
+	# A champion wears its ring's trick as well, because the ring *is* the trick in this world: the
+	# fight that guards a spirit zone should be the fight this ground has been teaching.
+	enemy.set("trick", String(TRICK_BY_RING[clampi(ring, 0, TRICK_BY_RING.size() - 1)]))
 	enemy.set("home", centre + local)
 	enemy.position = local
 	root.add_child(enemy)

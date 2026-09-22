@@ -275,6 +275,30 @@ A decision is written into the save, so it survives the session — including th
 of it: the camps are told what you decided as they are built, because a map that regenerates
 with a burned camp standing again would make the choice a session-long trinket.
 
+### The first hour
+
+A body appears in this valley with an elder, a help strip and a task, and the thing a game of this
+kind is supposed to have is an *incident* — something that happens in the first ten minutes that
+you did not arrange, whose consequence you meet three hours later. Six scenes do that, in a fixed
+order, each one firing the first time the world offers the right moment:
+
+1. **The gate** — a watchman will not let you in until you say what you are.
+2. **The bend in the road** — a cart on its side, a driver under it, and a raider fire in sight.
+3. **The crossroads** — a notice with a badly drawn picture of *you* on it.
+4. **The stone you passed** — nine strokes scratched into it, one of them crossed out. It was
+   not there this morning.
+5. **A cart of pots** — a trader who names a price before you ask, and offers credit.
+6. **The oath** — three villages, one road, and a tower at the end of it, which want you.
+
+Everything is the machinery that was already here — the dialogue panel, the decision record, the
+reputation — with the speaker left off, so the caption over the line is the *place* rather than a
+person. Four rules, and they are the design: **in order** (only the first scene not yet told is
+ever eligible, so the hour is a story rather than a pile of triggers), **one at a time** with a
+fifteen-second pause between them, **never** during a conversation or in the tower or in the dark,
+and **every answer has a price that arrives later**. The price is nearly always reputation, which
+is the only number in this game that is paid back hours after it moves: a cheaper shelf, a watch
+that looks away, or a gate that suddenly will not open.
+
 ### Combat and dying
 
 Striking a raider pays ATTACK, prints the number that just came off it, and lights the body
@@ -282,11 +306,32 @@ up for a tenth of a second; being hit pays HP; killing one pays crystals, which 
 elder's tasks and the sites out in the world also hand out. Crystals are spent at the
 elder's shelf, so the fight, the walk and the training all feed the same purse.
 
-Dying respawns you at the spawn point and costs you nothing you cannot work off: a **wound**.
-Wounds stack, make you take more damage and breathe back less qi, and close on their own out of
-a fight — or at a village healer, or in a spirit zone, fast. It is deliberately *not* a timer:
-the punishment for dying is a walk and a decision, not three minutes of watching a number go
-down while you are not allowed to play.
+A raider is not only a health bar. From the second ring of the map and the second band of the
+tower, each body carries **one trick**, said over its head and worn on its health bar:
+
+* **shielded** — a second pool of health. Every blow lands for half while it holds, so the answer
+  is to keep hitting rather than to come back later, and the break is announced.
+* **blood-fed** — it drinks a fifth of what it lands, read off the wound it actually made rather
+  than off its own damage figure. It cannot out-heal you. It can undo a skirmish.
+* **volatile** — it comes apart when it dies, and takes whoever is standing in it. Its light
+  brightens as its health falls, because an explosion nobody could plan for is a tax on finishing
+  a fight rather than a rule.
+
+Dying costs you nothing you cannot work off: a **wound**. Wounds stack, make you take more damage
+and breathe back less qi, and close on their own out of a fight — or at a village healer, or in a
+spirit zone, fast.
+
+What losing *is* now depends on where it happened, because the body is found by whoever is nearest:
+
+* **a watchman, if you are wanted** — the cell. You keep everything; the fine stands, and the door
+  is a decision (pay it, or force it and be remembered).
+* **a raider, near a camp** — half the purse, and your gear where you left it.
+* **a villager, on a road near a village** — the healer, who closes a wound.
+* **nobody** — the old event: asleep on the road, whole, and the walk back is the cost.
+
+So the ring around a raider camp is expensive and the roads between the villages are the safest
+ground in the valley. Nothing here is a timer and nothing reads your health: the decision is a
+*position*, which is what makes it legible from the map.
 
 ### The three villages
 
@@ -300,6 +345,14 @@ meant to happen.
   carry to the next one, so the map is walked in an order instead of picked over.
 * **Reputation, village by village** — serving one is noticed by the others, and what a
   villager says to you depends on how much of you there is and what you have done elsewhere.
+  The three of them are **rivals**: a favour done in Stonewatch is worth a little less at
+  Hollowmere the same afternoon, one point per three, so no single good turn is punished and the
+  road stops being a place where everybody is pleased with you at once.
+* **The law and the opinion are one ladder** — breaking a village's law costs its opinion of you,
+  and its opinion sets its prices, so robbing your way down the valley eventually finds the
+  shelves closed — not because anything was scripted to close them, but because you stopped being
+  welcome. It runs the other way too: at **trusted** or better, the same crime that would shut a
+  gate on a stranger is a warning, once, and the next rung is bought at the full price.
 * **The bounty board** — each village posts named marks: an ordinary raider with a *name*, a
   modifier and a price. The fight is one you already know; the name is what makes it an event,
   and the price is paid at the board, which is why the mark is worth walking back for.
@@ -372,6 +425,44 @@ burns only when the sky is dark enough to matter — so it is a tool rather than
 and a lamp that is always on is a lamp nobody notices — and it hangs on the *body* rather than on
 the character model, because a light under a scaled parent has its range scaled with it, which
 would make how far you can see depend on how tall your character happens to be.
+
+### The Hollow
+
+Every other place in this valley is *found*: a beacon you can see from a hill, a road that leads to
+it, a name on the map. That is the right design for nine sites and the wrong one for a tenth,
+because it makes the lamp a stat rather than a tool — and until there was somewhere the lamp's
+circle was the *only* light you had, it was decoration.
+
+**The Hollow** is a hollow in the rock, half the map out on the far side of the first ward, roofed
+with a stone dome. The roof is geometry and the darkness is the engine's: the sun genuinely does
+not get in. The place also tells the *clock* it is dark (`Clock.set_darkness_floor`), rather than
+lighting a shader of its own, which is what makes the lamp strike in there at noon without the lamp
+knowing a cave exists — it asks the clock, and the clock is answering about the place. The camera
+stops rendering the sky at all, so the background is not the weather.
+
+What is inside: four dwellers with a short leash, and a cold stone on a slab with the Ninth's mark
+on it. **Unlit inside, a strike lands for half** — you cannot aim at what you cannot see — so
+walking in without a lamp is possible and is not a plan. The stone pays crystals and two cap boons
+once, forever, and the place is drawn on the minimap as a dark disc with one legend note that
+answers a question about *gear* rather than about danger.
+
+### Music
+
+Six looping beds, one per place and half of the day: the valley, the valley at night, a village, a
+village at night, the tower, the Hollow. They were generated with Lyria and are transcoded to Ogg
+(`tools/make_music.py` — re-running it only renders what is missing), about 5.8 MB in total.
+
+Nothing that wants music calls it. A director in the world asks once a second *where the body is
+standing* and the answer **is** the theme: the tower wins over the valley, the Hollow wins over the
+valley, a village wins over the valley, and everything else is the valley. That means a new place
+only has to say where it is, and a place that says nothing still gets the valley rather than
+silence. Two players and a hand-rolled fade do the crossfade — hand-rolled because a fade that is a
+number in `_process` can be *measured*, and the suite walks it: both beds audible halfway, one at
+the end, nothing in between. The music is on its own bus with its own level in the settings panel,
+next to the voices, and it ducks under a conversation and under meditation.
+
+Beds loop, and that is not the importer's default: a theme that plays once and stops is worse than
+no theme, because the silence arrives eighty-eight seconds in, mid-fight.
 
 ### Two languages
 
@@ -470,7 +561,7 @@ godot --headless --path . -- --selftest
 It ends with a count and exits non-zero if anything failed:
 
 ```
----- self test: 1148 checks, 0 failed ----
+---- self test: 1286 checks, 0 failed ----
 ```
 
 Run it in **game mode** (`godot --headless --path . -- --selftest`), not through `-s`. In script
@@ -520,18 +611,22 @@ scripts/
             shop, audio, wards (the gates and the champions), story (the cast and the
             decisions), haven (the sanctuary registry), villages (the three towns, their
             people and their reputation), law (wanted, fines, cells), bounties (the boards),
-            forge (materials and named gear), tower (the hundred floors), clock (day and
-            night), raids (the night a village is attacked), loc (the language) and
-            voice_table (the recorded lines; generated, do not edit)
-  player/   controller, animator, camera rig, striker, aura, qi_pressure
+            forge (materials and named gear),            tower (the hundred floors), clock (day and
+            night), raids (the night a village is attacked), music (the beds and the
+            crossfade), fate (who finds a beaten body), prologue (the first hour's
+            director), loc (the language), loc_fr (the French table) and voice_table
+            (the recorded lines; generated, do not edit)
+  player/   controller, animator, camera rig, striker, aura, qi_pressure, lantern
   world/    terrain, roads, scatter, camps, qi zones, safe zone, signposts,
-            landmarks (the sites), quest_npc (the elder), villager, people (the crowd),
-            village_site + villages_place (the towns), village_npc, guard (the watch),
-            tower_site (the tower and its arena), night_sky (the stars and the moon)
+            landmarks (the sites), cave_site (the Hollow), quest_npc (the elder), villager,
+            people (the crowd), village_site + villages_place (the towns), village_npc,
+            guard (the watch), tower_site (the tower and its arena), music_director (which
+            theme answers for where the body is), night_sky (the stars and the moon)
   ui/       hud, minimap, wayfinder, avatar nameplate
   enemy/    the raider, the factory that composes a floor's fight
 assets/
   voice/    the recorded lines, one folder per language — see tools/make_voice.py
+  music/    the six region beds, generated then transcoded — see tools/make_music.py
 tests/      self_test.gd — the headless suite
 tools/      setup_project.gd (writes project.godot), make_voice.py (bakes the spoken
             lines), export scripts, web server

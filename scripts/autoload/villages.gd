@@ -407,11 +407,28 @@ func price_factor(village_id: String) -> float:
 	return (1.0 - 0.055 * float(step)) * float(LAW_SURCHARGE[clampi(wanted, 0, LAW_SURCHARGE.size() - 1)])
 
 
+## Moves a village's opinion of the body, and — for the better — quietly cools the other two.
+##
+## The three villages are on one short road with one set of shelves each and a clientele they
+## share, which is the only rivalry the world needs to state: doing a good turn for Stonewatch is
+## worth *less* at Hollowmere the same afternoon, and no dialogue tree has to explain why. It is
+## also the whole reason the prologue's choices are interesting — every favour is a favour to
+## somebody in particular.
+##
+## One point per three, so a quest's +10 moves the others by three and a well-earned reputation
+## still ends up worth having with all three. A steeper ratio would make the map a single
+## allegiance, which is a different and smaller game than the one this is.
 func adjust_rep(village_id: String, amount: int, reason: String) -> void:
 	if village_id == "" or amount == 0:
 		return
 	var before: int = rep_of(village_id)
 	reputation[village_id] = maxi(0, before + amount)
+	if amount > 0:
+		var spill: int = maxi(1, amount / 3)
+		for other: String in reputation.keys():
+			if other == village_id:
+				continue
+			reputation[other] = maxi(0, rep_of(other) - spill)
 	PlayerData.mark_dirty()
 	reputation_changed.emit(village_id, rep_of(village_id), reason)
 	if amount > 0 and rep_label(village_id) != rep_label_from(before):

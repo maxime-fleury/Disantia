@@ -94,6 +94,17 @@ const SHOUT_CHAMPION := "You have come to the wrong ring."
 ## The aura it wears, so the ring's colour follows its champion around.
 @export var rune_color: Color = Color("ffd76e")
 
+@export_group("Character")
+## A trick this body has, so ten bands of a tower and a dozen camps are not the same fight in
+## different colours.
+##
+## Three, and only three, for a reason: a fight has to be *learned* in one exchange, in the dark,
+## at forty metres, with the body already swinging. A shield you break, a body that feeds on what
+## it lands, and a body that bursts when it dies are each one sentence long, each readable from
+## the health bar alone, and each changes what the player does next (close once more, keep it at
+## arm's length, step away at the end). Anything cleverer is content nobody can see.
+@export var trick: String = ""
+
 @export_group("Ranged")
 ## Damage per qi bolt, and zero on everything but the Ninth. This is the one enemy in the
 ## game that can hurt you from further than a stride away, and that is the point of it: for
@@ -115,6 +126,30 @@ const SHOUT_CHAMPION := "You have come to the wrong ring."
 
 ## Seconds a body spends off its feet after a hard landing shakes the ground under it.
 const STAGGER_SECONDS := 1.4
+
+# ---------------------------------------------------------------------------- traits
+
+const SHIELD := "shield"
+const BLOOD := "blood"
+const EMBER := "ember"
+## Every trick a body can have, in one list. Read by `Tower.trait_for_band` and by the suite, so
+## a band that names a trick nobody implemented is a failure rather than a quiet ordinary raider.
+const TRICKS: Array = [SHIELD, BLOOD, EMBER]
+
+## What a shield holds before it gives, as a share of the body's own health. The body is
+## untouched until it breaks; `_shield` is the second health bar, drawn in its place.
+const SHIELD_SHARE := 0.55
+## What actually lands while the shield is up. Half: enough that a shield is not a wall, little
+## enough that the answer is "hit it anyway" rather than "come back later".
+const SHIELD_TAKE := 0.5
+## What it drinks per point it lands, as a share of its own health. It cannot out-heal a
+## player's damage, and it *can* undo a skirmish — which is the fight it is in.
+const BLOOD_SHARE := 0.22
+## Where the burst reaches, and what it is worth as a share of the body's own swing. Wide
+## enough to catch somebody standing in a fight, short enough that walking off as it dies is
+## always enough.
+const EMBER_RADIUS := 4.6
+const EMBER_SHARE := 0.55
 
 @export_group("Feedback")
 ## Seconds an enemy's own surfaces stay lit after a blow.
@@ -162,6 +197,10 @@ var _flash_materials: Array[StandardMaterial3D] = []
 var _bolt_timer: float = 0.0
 var _bolt_windup_at: float = -1.0
 var _rune: OmniLight3D
+## What is left of the trick. A shield is a second pool of health drawn where the first one is.
+var _shield: float = 0.0
+## How many shields have broken. A count, so a check can tell "broke" from "never had one".
+var broken_shields: int = 0
 
 
 ## True for the named champions who hold the rings' spirit zones.
@@ -175,16 +214,22 @@ func _ready() -> void:
 		add_to_group("champion")
 	_gravity = float(ProjectSettings.get_setting("physics/3d/default_gravity", 9.8))
 	hp = max_hp
+	if trick == SHIELD:
+		_shield = max_hp * SHIELD_SHARE
 	_build_body()
 	_build_health_bar()
-	if is_champion():
+	# The ember body is lit by its own charge and brightens as it comes apart, so its light is
+	# built whenever the trick is present rather than only on a champion.
+	if is_champion() or trick == EMBER:
 		_build_rune()
+	if is_champion():
 		_build_nameplate()
 		_bolt_timer = bolt_interval
-	elif display_name != "":
+	elif display_name != "" or trick != "":
 		# A bounty's mark is an ordinary raider with a *name*, which is the whole trick of the
 		# board: the fight is the fight the player already knows, and a name over the head is
-		# what turns it back into an event.
+		# what turns it back into an event. A body with a trick gets one for the same reason:
+		# a shield nobody can see is a raider that takes half the damage for no visible cause.
 		_build_nameplate()
 
 
@@ -359,6 +404,11 @@ func _build_health_bar() -> void:
 	# same depth are a coin flip: the plate was winning and the bar read as empty.
 	_health_fill.material_override = _bar_material(Color("ff6b6b"), 2)
 	_health_fill.position = Vector3(0.0, 0.0, 0.002)
+	if trick == SHIELD:
+		# The bar is the shield while the shield holds. One widget, and the question the player is
+		# actually asking — "is it still up" — is answered by the colour of what they are already
+		# watching.
+		_health_fill.material_override = _bar_material(_trick_colour(), 2)
 	_health_bar.add_child(_health_fill)
 
 
@@ -367,12 +417,16 @@ func _build_health_bar() -> void:
 func _build_nameplate() -> void:
 	var plate := Label3D.new()
 	plate.name = "Nameplate"
-	plate.text = display_name
+	# The trick, then the name. Read in that order because the trick is the part that changes what
+	# the player does; a name is only interesting once the body is on the ground anyway.
+	var tag: String = trick_tag()
+	plate.text = ("%s · %s" % [tag, display_name if display_name != "" else Loc.say("Raider")]
+		if tag != "" else display_name)
 	plate.font_size = 96
 	plate.pixel_size = 0.0034 * scale_factor
 	plate.outline_size = 22
 	plate.outline_modulate = Color(0.04, 0.03, 0.05, 0.9)
-	plate.modulate = rune_color.lightened(0.35)
+	plate.modulate = _trick_colour() if has_trick() else rune_color.lightened(0.35)
 	plate.billboard = BaseMaterial3D.BILLBOARD_ENABLED
 	plate.no_depth_test = true
 	plate.shaded = false
@@ -429,6 +483,15 @@ func take_hit(damage: float, from: Vector3 = Vector3.ZERO) -> float:
 	# told about the road. See `_may_pursue`.
 	_provoked = true
 	var dealt: float = maxf(0.0, damage)
+	# The shield first. Half of every blow lands and the rest comes off the shield, so the pool
+	# empties at half the rate the body would have been losing health — and the break itself is an
+	# event, because that is the moment the fight changes and the player has to know it happened.
+	if trick == SHIELD and _shield > 0.0:
+		var absorbed: float = dealt * (1.0 - SHIELD_TAKE)
+		_shield = maxf(0.0, _shield - absorbed)
+		dealt *= SHIELD_TAKE
+		if _shield <= 0.0:
+			_break_shield()
 	hp = maxf(0.0, hp - dealt)
 	_health_bar.visible = true
 	_update_health_bar()
@@ -471,7 +534,37 @@ func _die(from: Vector3) -> void:
 			"Raider down. +%d crystals." % crystals, "gain"
 		)
 	Audio.play_at("drop", global_position, -2.0, 0.85)
+	if trick == EMBER:
+		_burst()
 	died.emit(self)
+
+
+## It comes apart. The one trick that reaches beyond the body that has it, and the reason a
+## dying volatile raider is a question about *standing* rather than a free kill: the last blow is
+## not the end of the exchange, it is the middle of it.
+##
+## Guarded to the world rather than to the player alone, because a raid is a fight between two
+## other people and a burst that only ever hurt the player would be a rule that reads as unfair
+## the first time a watchman covers a raider that blows up in his face.
+func _burst() -> void:
+	var blast: float = attack_damage * EMBER_SHARE
+	for body: Node in get_tree().get_nodes_in_group("enemy"):
+		if body == self or not body is Node3D:
+			continue
+		if _flat_away((body as Node3D).global_position) > EMBER_RADIUS:
+			continue
+		if body.has_method("take_hit"):
+			body.call("take_hit", blast * 0.5, global_position)
+	var player: Node3D = get_tree().get_first_node_in_group("player") as Node3D
+	if player != null and _flat_away(player.global_position) <= EMBER_RADIUS:
+		if player.has_method("take_enemy_blow"):
+			player.call("take_enemy_blow", blast, self)
+	PlayerData.log_message.emit("It comes apart where it stood. Keep your distance.", "damage")
+	Audio.play_at("impact", global_position, 2.0, 0.55)
+
+
+func _flat_away(at: Vector3) -> float:
+	return Vector2(at.x - global_position.x, at.z - global_position.z).length()
 
 
 ## A champion does not come back, and it leaves something behind that no raider does.
@@ -577,6 +670,62 @@ func _update_health_bar() -> void:
 	# The fill scales about its centre, so it has to slide left as it shrinks or it
 	# drains towards the middle instead of towards the end.
 	_health_fill.position.x = -_bar_full_width * 0.5 * (1.0 - ratio)
+	# The ember's tell. It is carrying the burst the whole fight, and a body that is *visibly*
+	# brighter the closer it is to dying is a body whose death can be planned for — which is the
+	# only thing that makes an explosion a fair mechanic rather than a tax on finishing a fight.
+	if trick == EMBER and _rune != null:
+		_rune.light_energy = 1.2 + 4.0 * (1.0 - ratio)
+
+
+## The shield gives. Said out loud and shown, because the whole trick is that the player has to
+## notice it, and a body that silently started taking double damage would read as a bug in the
+## damage numbers rather than as the fight turning.
+func _break_shield() -> void:
+	broken_shields += 1
+	# Back to the ordinary fill colour: while the shield held, the bar was drawn in the shield's
+	# colour, so the same bar answers "does it still have one" without a second widget.
+	_health_fill.material_override = _bar_material(Color("ff6b6b"), 2)
+	_flinch = 0.6
+	_play("RecieveHit")
+	Audio.play_at("impact", global_position, -1.0, 0.65)
+	PlayerData.log_message.emit(
+		"%s — the guard breaks." % (display_name if display_name != "" else Loc.say("The raider")),
+		"gain"
+	)
+
+
+## What the name over this body's head says, in front of the name: the trick, in two words.
+func trick_tag() -> String:
+	match trick:
+		SHIELD:
+			return Loc.say("shielded")
+		BLOOD:
+			return Loc.say("blood-fed")
+		EMBER:
+			return Loc.say("volatile")
+	return ""
+
+
+func shield_left() -> float:
+	return _shield
+
+
+func has_trick() -> bool:
+	return trick != ""
+
+
+## What a trick looks like. Three colours, one per trick, worn by the name over the head and by
+## the health bar while a shield holds — so a player learns them the way they learn a champion's
+## colour: by seeing them, once, at a distance.
+func _trick_colour() -> Color:
+	match trick:
+		SHIELD:
+			return Color("9fd6ff")
+		BLOOD:
+			return Color("ff8fa8")
+		EMBER:
+			return Color("ffb066")
+	return rune_color.lightened(0.35)
 
 
 ## True when this raider has any business moving: leashed to its camp, off its back
@@ -788,10 +937,21 @@ func _tick_swing(delta: float) -> void:
 	# Two doors because there are two kinds of body. The player takes a blow through
 	# `take_enemy_blow`; a watchman takes it through `take_hit_from`, which is the same wound
 	# without the crime — a guard struck by a raider is not a crime *the player committed*.
+	var landed: float = attack_damage
 	if _quarry.has_method("take_enemy_blow"):
-		_quarry.call("take_enemy_blow", attack_damage, self)
+		var dealt: Variant = _quarry.call("take_enemy_blow", attack_damage, self)
+		if typeof(dealt) == TYPE_FLOAT or typeof(dealt) == TYPE_INT:
+			landed = float(dealt)
 	elif _quarry.has_method("take_hit_from"):
 		_quarry.call("take_hit_from", attack_damage, self)
+	# A body that feeds on what it lands. Read off the wound the blow actually made rather than
+	# off its own damage figure, so a hit taken on a body that shrugs damage off heals less — the
+	# trick is a leech, not a fountain.
+	if trick == BLOOD and landed > 0.0 and not is_dead():
+		hp = minf(max_hp, hp + landed * BLOOD_SHARE)
+		_update_health_bar()
+		if _health_bar != null:
+			_health_bar.visible = true
 
 
 ## The Ninth's thrown attack: wind up, then throw.

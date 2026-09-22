@@ -124,6 +124,10 @@ var _voice_buttons: Array = []
 ## a language switch can leave it alone — the volume is a property of the room, not of the words.
 var _voice_volume: HSlider
 var _voice_volume_readout: Label
+## The same pair for the soundtrack, held for the same reason.
+var _music_buttons: Array = []
+var _music_volume: HSlider
+var _music_volume_readout: Label
 
 ## The line the volume slider auditions. A real line, from a speaker who has both takes, so the
 ## slider can be set by ear in either language instead of by a number on a bar.
@@ -959,6 +963,50 @@ func _build_settings_modal() -> void:
 	volume_row.add_child(_voice_volume_readout)
 	body.add_child(volume_row)
 
+	# And the soundtrack, in the same shape and the same order as the voices. A player who has
+	# just found one of these rows should not have to hunt for the other, and the two are the
+	# same decision — what the room sounds like — so they are built by the same hand.
+	body.add_child(_make_heading("MUSIC", Color("9ad8ff")))
+	var music_row := HBoxContainer.new()
+	music_row.name = "MusicRow"
+	music_row.add_theme_constant_override("separation", 8)
+	for i in 2:
+		var pick := Button.new()
+		pick.name = "Music%d" % i
+		pick.text = "On" if i == 0 else "Off"
+		pick.focus_mode = Control.FOCUS_NONE
+		pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pick.disabled = (i == 0) == Music.enabled
+		pick.pressed.connect(_on_music_pressed.bind(i == 0))
+		music_row.add_child(pick)
+		_music_buttons.append(pick)
+	body.add_child(music_row)
+
+	var music_volume_row := HBoxContainer.new()
+	music_volume_row.name = "MusicVolumeRow"
+	music_volume_row.add_theme_constant_override("separation", 8)
+	var music_label := _make_label(Loc.say("Volume"), 13, Color("e6edf5"))
+	music_label.custom_minimum_size = Vector2(96, 0)
+	music_volume_row.add_child(music_label)
+	_music_volume = HSlider.new()
+	_music_volume.name = "MusicVolume"
+	_music_volume.min_value = 0.0
+	_music_volume.max_value = 1.0
+	_music_volume.step = 0.05
+	_music_volume.value = Music.volume
+	_music_volume.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_music_volume.focus_mode = Control.FOCUS_NONE
+	_music_volume.mouse_filter = Control.MOUSE_FILTER_STOP
+	_music_volume.value_changed.connect(_on_music_volume_changed)
+	music_volume_row.add_child(_music_volume)
+	_music_volume_readout = _make_label("%d%%" % int(round(Music.volume * 100.0)), 13,
+		Color("f2f6fb"))
+	_music_volume_readout.name = "MusicVolumeReadout"
+	_music_volume_readout.custom_minimum_size = Vector2(48, 0)
+	_music_volume_readout.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	music_volume_row.add_child(_music_volume_readout)
+	body.add_child(music_volume_row)
+
 	body.add_child(_make_heading("AURA", Color("9ad8ff")))
 	var grid := GridContainer.new()
 	grid.name = "AuraGrid"
@@ -1202,7 +1250,7 @@ func _refresh_map_legend() -> void:
 			var note: String = String(entry.get("note", ""))
 			_map_legend.add_child(_make_legend_row(
 				entry["color"], String(entry["text"])
-					+ (" · " + note if note.begins_with("a reward") else ""),
+					+ (" · " + note if LEGEND_NOTES.has(note) else ""),
 				false
 			))
 	if _map_view != null and _map_view.has_method("zone_legend"):
@@ -1212,6 +1260,14 @@ func _refresh_map_legend() -> void:
 				entry["color"], "%s · %s" % [String(entry["text"]), String(entry["note"])],
 				locked
 			))
+
+
+## The legend notes short enough to earn their place on the line — and they earn it by answering
+## a question rather than by naming a thing. "a reward is waiting" is about to be claimed, and
+## "you will need a light" is the only line in the interface that tells a player that the Hollow
+## is a place their *gear* has an opinion about. Everything else the legend says is said better by
+## the help strip than by four more words in a corner.
+const LEGEND_NOTES: Array = ["a reward is waiting", "you will need a light", "emptied"]
 
 
 ## Every word in the map's legend, joined, for the self-test. The panel is a column of
@@ -1406,6 +1462,24 @@ func _on_voices_pressed(on: bool) -> void:
 		var button: Button = _voice_buttons[i]
 		if button != null and is_instance_valid(button):
 			button.disabled = (i == 0) == Voice.enabled
+
+
+## The music level, applied as it is dragged. Unlike the voices there is nothing to audition: the
+## bed is already playing, so the slider *is* the preview, and a player hears the room change while
+## their hand is still on it.
+func _on_music_volume_changed(value: float) -> void:
+	Music.set_volume(value)
+	if _music_volume_readout != null and is_instance_valid(_music_volume_readout):
+		_music_volume_readout.text = "%d%%" % int(round(value * 100.0))
+
+
+func _on_music_pressed(on: bool) -> void:
+	Audio.play("ui_toggle", -6.0)
+	Music.set_enabled(on)
+	for i in _music_buttons.size():
+		var button: Button = _music_buttons[i]
+		if button != null and is_instance_valid(button):
+			button.disabled = (i == 0) == Music.enabled
 
 
 func _refresh() -> void:
@@ -1821,7 +1895,12 @@ func _choose(index: int) -> void:
 	if index < 0 or index >= options.size():
 		Story.close()
 		return
-	Story.choose(String((options[index] as Dictionary)["key"]))
+	var decision: Dictionary = Story.choose(String((options[index] as Dictionary)["key"]))
+	# The prologue counts its pause from the *answer* rather than from the question. A scene left on
+	# screen for a minute and then answered should not be followed by the next one a second later,
+	# and the only thing that knows when it was answered is here.
+	if not decision.is_empty() and Story.EVENTS.has(String(decision.get("decision", ""))):
+		Prologue.scene_closed()
 	Audio.play("ui_select", -4.0)
 	_refresh_dialogue()
 
@@ -1870,9 +1949,12 @@ func _refresh_dialogue() -> void:
 	if _dialogue == null:
 		return
 	var talk: Dictionary = Story.conversation()
-	_dialogue_speaker.text = "%s · %s" % [
-		String(talk.get("speaker", "")), String(talk.get("role", "")),
-	]
+	# A speaker with no role is a *scene* rather than a person — the first hour's events are the
+	# world happening to the body, and the caption is the place. Rendered without the separator so
+	# a scene does not read as somebody whose job is missing.
+	var who: String = String(talk.get("speaker", ""))
+	var job: String = String(talk.get("role", ""))
+	_dialogue_speaker.text = ("%s · %s" % [who, job]) if job != "" else who
 	_dialogue_line.text = String(talk.get("line", ""))
 	for button: Node in _dialogue_buttons:
 		button.queue_free()

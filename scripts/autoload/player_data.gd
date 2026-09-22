@@ -258,6 +258,14 @@ var suppress_qi_regen: bool:
 	get:
 		return Cultivation.meditating
 
+## Set by anywhere the body is standing in the dark with nothing lit — today, the Hollow — and
+## cleared the moment it leaves. Runtime only: it is a fact about where the body *is*, not about
+## what it has done, and a save that remembered it would blind a player on a road at noon.
+var unlit: bool = false
+## What a strike is worth when its owner cannot see. Half, because a blind swing that landed for
+## full would make the dark a mood rather than a rule.
+const UNLIT_STRIKE := 0.5
+
 ## Runtime state, keyed by stat id.
 var stats: Dictionary = {}
 
@@ -288,6 +296,7 @@ var _wards_consumed: bool = false
 ## `_ready` that opens with `PlayerData.take_loaded_module(key)`) is now saved and restored
 ## without this file knowing what it holds. Keyed by save key, valued by the autoload's path.
 const SAVE_MODULES: Dictionary = {
+	"fate": "/root/Fate",
 	"villages": "/root/Villages",
 	"law": "/root/Law",
 	# `sky` is the save file's own name for the clock, kept because the key is what an existing
@@ -301,6 +310,12 @@ const SAVE_MODULES: Dictionary = {
 	"bounties": "/root/Bounties",
 	"raids": "/root/Raids",
 	"loc": "/root/Loc",
+	# Both of these were reading a save section that nothing ever wrote: `Voice` opened by
+	# calling `take_loaded_module("voice")` and the key was not in this list, so the voices
+	# were on and at full volume in every session no matter what the player chose. The
+	# machinery was right and the one line that makes it real was missing.
+	"voice": "/root/Voice",
+	"music": "/root/Music",
 }
 var _loaded_modules: Dictionary = {}
 var _modules_consumed: Dictionary = {}
@@ -976,6 +991,12 @@ func reflect_fraction() -> float:
 ## suite can measure a mean over a thousand swings instead of hoping to see a crit.
 func strike_damage_rolled(rng: RandomNumberGenerator) -> float:
 	var base: float = strike_damage(rng.randf_range(0.85, 1.15)) * damage_multiplier_now()
+	# In a place with no light and no lamp, a strike lands for half. Asked here rather than in the
+	# striker or in the cave, because this is the one function every blow goes through — the swing,
+	# the cleave that carries it to the body beside it, the champion on the far side of a floor —
+	# and the rule is about the *body*, not about any one of those callers.
+	if unlit:
+		base *= UNLIT_STRIKE
 	if crush_chance() > 0.0 and rng.randf() < crush_chance():
 		return base * 2.0
 	return base
@@ -1348,6 +1369,22 @@ func add_crystals(amount: int) -> void:
 	crystals += amount
 	_dirty = true
 	crystals_changed.emit(crystals)
+
+
+## Takes crystals that were not spent: a raider's hand in the purse, and nothing else today.
+## Separate from `spend_crystals` because that one asks whether the body can afford it, and this
+## one is not a purchase — the answer is whatever is there. Returns what was actually taken, so
+## whoever did it can say the true number rather than the one they asked for.
+func take_crystals(amount: int) -> int:
+	if amount <= 0:
+		return 0
+	var taken: int = mini(amount, crystals)
+	if taken <= 0:
+		return 0
+	crystals -= taken
+	_dirty = true
+	crystals_changed.emit(crystals)
+	return taken
 
 
 ## Spends crystals if there are enough of them, and reports whether the purchase
@@ -1767,6 +1804,7 @@ func reset_progress() -> void:
 	wounds = 0
 	has_saved_position = false
 	saved_position = Vector3.ZERO
+	unlit = false
 	_dirty = false
 	if FileAccess.file_exists(save_path()):
 		# Remove through the DirAccess handle so this also works in the browser,

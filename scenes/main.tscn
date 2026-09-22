@@ -1,4 +1,4 @@
-[gd_scene load_steps=19 format=3]
+[gd_scene load_steps=21 format=3]
 
 [ext_resource type="Script" path="res://scripts/world/world.gd" id="1_world"]
 [ext_resource type="Script" path="res://scripts/world/terrain.gd" id="2_terrain"]
@@ -17,6 +17,8 @@
 [ext_resource type="Script" path="res://scripts/world/tower_site.gd" id="15_tower"]
 [ext_resource type="Script" path="res://scripts/world/villages_place.gd" id="16_villages"]
 [ext_resource type="Script" path="res://scripts/world/night_sky.gd" id="17_nightsky"]
+[ext_resource type="Script" path="res://scripts/world/music_director.gd" id="18_music"]
+[ext_resource type="Script" path="res://scripts/world/cave_site.gd" id="19_cave"]
 
 [sub_resource type="ProceduralSkyMaterial" id="Sky_mat"]
 sky_top_color = Color(0.25, 0.42, 0.72, 1)
@@ -86,6 +88,9 @@ script = ExtResource("9_camps")
 [node name="Signposts" type="Node3D" parent="."]
 script = ExtResource("10_signs")
 
+[node name="Cave" type="Node3D" parent="."]
+script = ExtResource("19_cave")
+
 [node name="Landmarks" type="Node3D" parent="."]
 script = ExtResource("12_landmarks")
 
@@ -104,5 +109,8 @@ script = ExtResource("14_people")
 
 [node name="Player" parent="." instance=ExtResource("3_player")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 8, 0)
+
+[node name="MusicDirector" type="Node" parent="."]
+script = ExtResource("18_music")
 
 [node name="HUD" parent="." instance=ExtResource("4_hud")]

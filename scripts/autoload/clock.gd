@@ -100,6 +100,7 @@ func save_data() -> Dictionary:
 func reset() -> void:
 	minutes = 8.5 * 60.0
 	day = 1
+	darkness_floor = 0.0
 	_phase = phase()
 
 
@@ -152,11 +153,25 @@ func is_night() -> bool:
 	return phase() == "night"
 
 
+## A floor under how dark it is, for anywhere the sky does not reach.
+##
+## Set by the Hollow and by nothing else. It exists because "it is dark in here" has to be a
+## statement about the *place* rather than about the hour: the lamp lights when the world is dark,
+## the watchers look further when the world is dark, the spirit zones run richer when the world is
+## dark — and every one of those was reading a clock that does not know a stone roof exists. One
+## number, and the whole game agrees that standing in a cave is standing in the dark.
+var darkness_floor: float = 0.0
+
+
+func set_darkness_floor(value: float) -> void:
+	darkness_floor = clampf(value, 0.0, 1.0)
+
+
 ## How dark it is, 0 (noon) to 1 (deep night). Used by the HUD's palette and by anything that
 ## wants to darken with the world without re-deriving the clock.
 func darkness() -> float:
 	var lit: float = float(_light_key()["energy"])
-	return clampf(1.0 - lit / 1.5, 0.0, 1.0)
+	return clampf(maxf(1.0 - lit / 1.5, darkness_floor), 0.0, 1.0)
 
 
 # --------------------------------------------------------------- what it changes

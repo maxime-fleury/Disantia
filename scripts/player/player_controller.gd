@@ -811,16 +811,16 @@ func _respawn() -> void:
 			tower.call("step_out")
 		PlayerData.restore_all()
 		return
-	# The *nearest* sanctuary, not the only one. A body beaten two hundred metres out in the
-	# outer reach used to be walked all the way home, and walking is not a cost a game can
-	# charge for twice — the walk out there was the cost, and it was already paid.
-	warp_to(_wake_point())
+	# Who finds the body, and therefore what losing costs. Asked of `Fate` with the *position the
+	# body fell at*, before anything has moved it: the answer is a fact about where the fight was,
+	# which is what makes the rule readable from the map — the ring around a camp is expensive, the
+	# roads between the villages are not.
+	#
+	# The warp is inside the decision rather than after it, because a body that is arrested wakes
+	# behind a door and a body that is robbed wakes on the nearest road, and a controller that
+	# warped once and then let Fate move it again would be one place too many holding that number.
+	Fate.found(global_position)
 	PlayerData.restore_all()
-	var where: String = "the camp"
-	var entry: Dictionary = Haven.nearest(global_position)
-	if not entry.is_empty() and String(entry["kind"]) == "village":
-		where = String(entry["name"])
-	PlayerData.log_message.emit("You wake in %s, whole." % where, "info")
 
 
 ## Where a beaten body comes to. Separated from `_spawn_point` because the recall technique
