@@ -1,4 +1,4 @@
-[gd_scene load_steps=15 format=3]
+[gd_scene load_steps=17 format=3]
 
 [ext_resource type="Script" path="res://scripts/world/world.gd" id="1_world"]
 [ext_resource type="Script" path="res://scripts/world/terrain.gd" id="2_terrain"]
@@ -11,6 +11,9 @@
 [ext_resource type="Script" path="res://scripts/world/enemy_camps.gd" id="9_camps"]
 [ext_resource type="Script" path="res://scripts/world/signposts.gd" id="10_signs"]
 [ext_resource type="Script" path="res://scripts/world/quest_npc.gd" id="11_npc"]
+[ext_resource type="Script" path="res://scripts/world/landmarks.gd" id="12_landmarks"]
+[ext_resource type="Script" path="res://scripts/world/ward_walls.gd" id="13_wards"]
+[ext_resource type="Script" path="res://scripts/world/people.gd" id="14_people"]
 
 [sub_resource type="ProceduralSkyMaterial" id="Sky_mat"]
 sky_top_color = Color(0.25, 0.42, 0.72, 1)
@@ -62,12 +65,21 @@ script = ExtResource("9_camps")
 [node name="Signposts" type="Node3D" parent="."]
 script = ExtResource("10_signs")
 
+[node name="Landmarks" type="Node3D" parent="."]
+script = ExtResource("12_landmarks")
+
+[node name="WardWalls" type="Node3D" parent="."]
+script = ExtResource("13_wards")
+
 [node name="SafeZone" type="Node3D" parent="."]
 script = ExtResource("8_safezone")
 
 [node name="QuestNpc" type="StaticBody3D" parent="."]
 script = ExtResource("11_npc")
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.9, 0, 3.5)
+
+[node name="People" type="Node3D" parent="."]
+script = ExtResource("14_people")
 
 [node name="Player" parent="." instance=ExtResource("3_player")]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 8, 0)

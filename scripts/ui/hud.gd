@@ -39,6 +39,10 @@ const TRAINABLE_ROWS: Array = ["speed", "jump"]
 @onready var _quest_name: Label = %QuestName
 @onready var _quest_bar: ProgressBar = %QuestBar
 @onready var _quest_progress: Label = %QuestProgress
+@onready var _path_chapter: Label = %PathChapter
+@onready var _path_name: Label = %PathName
+@onready var _path_bar: ProgressBar = %PathBar
+@onready var _path_progress: Label = %PathProgress
 @onready var _refinement_label: Label = %RefinementLabel
 @onready var _refinement_bar: ProgressBar = %RefinementBar
 @onready var _insight_label: Label = %InsightLabel
@@ -62,6 +66,8 @@ const TRAINABLE_ROWS: Array = ["speed", "jump"]
 @onready var _root: Control = %HudRoot
 
 var _value_labels: Dictionary = {}
+var _rank_labels: Dictionary = {}
+var _name_labels: Dictionary = {}
 var _fill_bars: Dictionary = {}
 var _xp_bars: Dictionary = {}
 var _sliders: Dictionary = {}
@@ -98,12 +104,31 @@ var _tasks_headline: Label
 var _tasks_bar: ProgressBar
 var _tasks_detail: Label
 var _tasks_claim: Button
+## The conversation with somebody in the world. A band along the bottom rather than a panel in
+## the middle: a dialogue is part of the place you are standing in, and the people you can see
+## while a person talks to you are the reason the person is worth having.
+var _dialogue: Control
+var _dialogue_panel: PanelContainer
+var _dialogue_speaker: Label
+var _dialogue_line: Label
+var _dialogue_options: VBoxContainer
+var _dialogue_hint: Label
+var _dialogue_tween: Tween
+var _dialogue_buttons: Array = []
+var _wares_scroll: ScrollContainer
+var _wares_body: VBoxContainer
+var _purse_label: Label
 var _scale_readout: Label
 var _map_panel: PanelContainer
 var _map_view: Control
 var _map_toggle: Button
 var _map_legend: VBoxContainer
 var _map_expanded: bool = true
+var _wayfinder: Control
+## The three lines of the technique block, built with the stat rows and refreshed with them.
+var _tech_title: Label
+var _tech_owned: Label
+var _tech_next: Label
 ## Bars mid-flight, and where each one is heading. Kept apart from the bars themselves
 ## so `_set_bar` can be called as often as the refresh runs without restarting an
 ## animation: the target moves, the displayed value chases it.
@@ -124,11 +149,16 @@ func _ready() -> void:
 	_dress_panels()
 	_build_stat_rows()
 	_build_drill_rows()
+	_build_techniques()
 	# Before the panel-scaling pass at the bottom of this method, which walks the root's
 	# children: a panel built after it would never be scaled or pinned.
 	_build_minimap()
 	_build_settings_modal()
 	_build_tasks_modal()
+	_build_dialogue()
+	# Last, so it draws over everything — and off entirely while a panel is open, which is
+	# what keeps that from mattering.
+	_build_wayfinder()
 	# Deferred, and again on every resize: each panel is scaled about its own anchored
 	# corner, which needs its laid-out size. At _ready the layout has not run yet.
 	_settings_button.icon = _gear_texture()
@@ -142,7 +172,8 @@ func _ready() -> void:
 	# first layout.
 	for node in _root.get_children():
 		var panel := node as Control
-		if panel == null or panel == _modal or panel == _tasks_modal:
+		if panel == null or panel == _modal or panel == _tasks_modal \
+				or panel == _wayfinder:
 			continue
 		panel.resized.connect(_apply_ui_scale)
 	_apply_ui_scale.call_deferred()
@@ -156,6 +187,19 @@ func _ready() -> void:
 		_refinement_bar.custom_minimum_size.y > 0.0 else 10
 	_refinement_bar.add_theme_stylebox_override("fill", _bar_fill(Color("9fd4ff"), meter_height))
 	_insight_bar.add_theme_stylebox_override("fill", _bar_fill(Color("ffd76e"), meter_height))
+	# The path meter, and the task meter beside it, in the scene file's own height. Dressed
+	# here with the rest so every bar in this interface is bevelled by the same helper and
+	# none of them is the default theme's flat rectangle.
+	for pair: Array in [[_path_bar, Color("9fd4ff")], [_quest_bar, Color("ffd76e")]]:
+		var row_bar: ProgressBar = pair[0]
+		if row_bar == null:
+			continue
+		var row_height: int = maxi(5, int(row_bar.custom_minimum_size.y))
+		row_bar.add_theme_stylebox_override("fill", _bar_fill(pair[1], row_height))
+		row_bar.add_theme_stylebox_override("background", _bar_track(row_height))
+		row_bar.show_percentage = false
+		row_bar.max_value = 1.0
+		row_bar.step = 0.001
 	for bar: ProgressBar in [_refinement_bar, _insight_bar]:
 		bar.add_theme_stylebox_override("background", _bar_track(meter_height))
 		bar.show_percentage = false
@@ -191,7 +235,8 @@ func _play_intro() -> void:
 	var panels: Array[Control] = []
 	for node in _root.get_children():
 		var panel := node as Control
-		if panel == null or panel == _modal or panel == _tasks_modal:
+		if panel == null or panel == _modal or panel == _tasks_modal \
+				or panel == _wayfinder:
 			continue
 		panels.append(panel)
 	# Furthest from the middle of the screen first: the outermost furniture lands last, so
@@ -254,6 +299,13 @@ func _ease_bars(delta: float) -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
+	# The conversation is read before anything else in the interface, because it is the one
+	# panel a player can be inside while pressing keys that mean something else everywhere
+	# else. A number key answers; escape, or the same key that opened it, steps away.
+	if dialogue_open():
+		if _handle_dialogue_key(event):
+			get_viewport().set_input_as_handled()
+			return
 	if event.is_action_pressed("settings"):
 		_toggle_settings()
 		get_viewport().set_input_as_handled()
@@ -503,8 +555,17 @@ func _build_stat_rows() -> void:
 		var value_label := _make_label("", 12, Color("e6edf5"))
 		value_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
 		value_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		# What the stat *became*, at the end of its own row. This is the whole point of the
+		# table behind it: the number is the slope and this is the thing the slope was for, so
+		# the two have to be readable in the same glance or the attainment only exists in a
+		# panel nobody opens.
+		var rank_label := _make_label("", 11, PlayerData.color(stat_id).lightened(0.35))
+		# Never wrapped and never squeezed: a rank squeezed to "Second\nWind" makes the row
+		# taller, and this is the tallest panel in the HUD.
+		rank_label.text_overrun_behavior = TextServer.OVERRUN_TRIM_ELLIPSIS
 		heading.add_child(name_label)
 		heading.add_child(value_label)
+		heading.add_child(rank_label)
 
 		var fill_bar := _make_bar(PlayerData.color(stat_id), 5)
 		var xp_bar := _make_bar(PlayerData.color(stat_id).darkened(0.45), 2)
@@ -515,8 +576,152 @@ func _build_stat_rows() -> void:
 		_stat_rows.add_child(column)
 
 		_value_labels[stat_id] = value_label
+		_rank_labels[stat_id] = rank_label
+		_name_labels[stat_id] = name_label
 		_fill_bars[stat_id] = fill_bar
 		_xp_bars[stat_id] = xp_bar
+
+
+## The list of what the stats have become: two lines and a count, in the panel that holds the
+## things the body can *do* rather than the ones that say how much it is worth.
+##
+## It lives here rather than at the foot of the stat readout for two reasons, and the second
+## one is the one that decided it. The readout is a column measured against the event log at
+## the shortest canvas the game supports, and it had minus forty-eight pixels of room for a
+## capabilities list; the action panel had room, and this is where a player looks for what
+## they own. And it is the same panel as the drills, the aura and the qi field, which are all
+## "things this body can do" — an attainment is the same kind of statement, so it belongs
+## with them rather than with the arithmetic.
+##
+## Two lines rather than eighteen rows. The live half of this information is already on each
+## stat's own row and its name's tooltip; what these lines add is the shape of the thing — how
+## much is left, and what the nearest two are called and what they want.
+##
+## Appends the block to the action panel and puts the hint back underneath it, so the panel
+## reads as capabilities first and prose last.
+func _build_techniques() -> void:
+	var body: VBoxContainer = _drill_rows.get_parent() as VBoxContainer
+	if body == null:
+		return
+	_build_technique_block(body)
+	if _hint != null:
+		body.move_child(_hint, body.get_child_count() - 1)
+
+
+## The count, the owned list and the next-up line, built into `parent`. Separate from
+## `_build_techniques` so a test can mount the block against a container of its own.
+func _build_technique_block(parent: VBoxContainer) -> void:
+	var block := VBoxContainer.new()
+	block.name = "Techniques"
+	block.add_theme_constant_override("separation", 1)
+	_tech_title = _make_label("TECHNIQUES", 11, Color("ffd76e"))
+	block.add_child(_tech_title)
+	_tech_owned = _make_label("", 11, Color("9be8c8"))
+	_tech_owned.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	block.add_child(_tech_owned)
+	_tech_next = _make_label("", 11, Color("8b95a3"))
+	_tech_next.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	block.add_child(_tech_next)
+	parent.add_child(block)
+
+
+## A stat's rank, at the end of its row, and the whole story of that stat in its name's
+## tooltip: what it has become, and what it is working towards.
+##
+## A tooltip rather than four more pixels of row, because the row has to stay one line tall
+## and the *next* threshold is the least urgent thing in the panel — it is a number to read
+## once, in a quiet moment, not something to keep in the corner of the eye.
+func _refresh_stat_rank(stat_id: String) -> void:
+	var rank: Label = _rank_labels.get(stat_id) as Label
+	if rank == null:
+		return
+	var held: String = PlayerData.attainment_label(stat_id)
+	rank.text = held
+	var next_one: Dictionary = PlayerData.next_attainment(stat_id)
+	var lines: Array = [
+		"%s — grows by: %s" % [PlayerData.label(stat_id), String(PlayerData.def(stat_id).get("earned_by", ""))],
+	]
+	if held != "":
+		lines.append("Held: %s." % held)
+	if not next_one.is_empty():
+		lines.append("Next: %s at %s — %s" % [
+			String(next_one["label"]),
+			PlayerData.format_value(stat_id, float(next_one["threshold"])),
+			String(next_one["blurb"]),
+		])
+	else:
+		lines.append("Every threshold in this stat is behind you.")
+	var name_label: Label = _name_labels.get(stat_id) as Label
+	if name_label != null:
+		name_label.tooltip_text = "\n".join(lines)
+
+
+## Repainted on the same pass as the stat rows, so the count and the ranks can never
+## disagree about what has been attained.
+func _refresh_techniques() -> void:
+	_refresh_attainments()
+
+
+## The count, the owned names, and the nearest two not yet held.
+func _refresh_attainments() -> void:
+	if _tech_title == null:
+		return
+	var rows: Array = PlayerData.attainment_rows()
+	var owned: Array = []
+	var pending: Array = []
+	for row: Dictionary in rows:
+		if bool(row["attained"]):
+			owned.append(String(row["label"]))
+		else:
+			pending.append(row)
+	_tech_title.text = "TECHNIQUES  %d / %d" % [owned.size(), rows.size()]
+	_tech_owned.text = "·".join(owned) if not owned.is_empty() else "nothing yet"
+	# The nearest two, by how far away they actually are rather than by table order — a player
+	# three points of DEFENSE from a wall is being told the wrong thing by a list sorted on
+	# stat names.
+	pending.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return float(a["missing"]) < float(b["missing"]))
+	var lines: Array = []
+	for i in mini(2, pending.size()):
+		var row: Dictionary = pending[i]
+		lines.append("%s (%s)" % [String(row["label"]), String(row["need"])])
+	_tech_next.text = ("next: " + "  ·  ".join(lines)) if not lines.is_empty() else "every technique held"
+	# What each one *does*, on hover.
+	#
+	# The names on the two lines are the only part of this that can be read at a glance, and a
+	# name is not a capability: "Cleave" tells a player nothing about a second body taking 40%
+	# of every blow. The blurbs are the whole point of the table, so they have to be reachable —
+	# and a tooltip is the only place they can live without the panel growing a row per
+	# technique, which is the thing this panel cannot afford. Nothing else in the interface has
+	# a fixed height and a fixed width at once.
+	_tech_title.tooltip_text = _technique_tooltip(owned, rows)
+	_tech_next.tooltip_text = _next_technique_tooltip(pending)
+
+
+## Every technique held, with the line that says what it does.
+func _technique_tooltip(owned: Array, rows: Array) -> String:
+	if owned.is_empty():
+		return ("No technique yet. Every stat turns into something at a multiple of its "
+			+ "starting cap — the name appears at the end of that stat's row when it does.")
+	var lines: Array = []
+	for row: Dictionary in rows:
+		if bool(row["attained"]):
+			lines.append("%s — %s" % [String(row["label"]), String(row["blurb"])])
+	lines.append("")
+	lines.append("%d of %d held." % [owned.size(), rows.size()])
+	return "\n".join(lines)
+
+
+## The nearest two, and what each would give.
+func _next_technique_tooltip(pending: Array) -> String:
+	if pending.is_empty():
+		return "Every stat has become everything it was going to become."
+	var lines: Array = []
+	for i in mini(2, pending.size()):
+		var row: Dictionary = pending[i]
+		lines.append("%s — %s" % [String(row["label"]), String(row["blurb"])])
+		lines.append("    needs %s, have %s" % [String(row["need"]), String(row["have"])])
+	return "\n".join(lines)
 
 
 ## One row per drill, straight from the training catalogue, so a new exercise
@@ -747,6 +952,8 @@ func _connect_signals() -> void:
 	PlayerData.log_message.connect(_append_log)
 	PlayerData.aura_changed.connect(_on_aura_changed)
 	PlayerData.crystals_changed.connect(_on_crystals_changed)
+	Wards.changed.connect(_queue_refresh)
+	Wards.ward_passed.connect(_on_ward_passed)
 	Quests.task_started.connect(_on_task_changed)
 	Quests.task_completed.connect(_on_task_changed)
 	Quests.task_claimed.connect(_on_task_changed)
@@ -755,6 +962,7 @@ func _connect_signals() -> void:
 	Cultivation.breakthrough_performed.connect(_on_breakthrough)
 	Training.rep_completed.connect(_on_rep_completed)
 	Training.log_message.connect(_append_log)
+	Story.conversation_changed.connect(_on_conversation_changed)
 
 
 func _queue_refresh() -> void:
@@ -975,9 +1183,14 @@ const MODAL_DIM := 0.62
 ## The HUD itself is set to `PROCESS_MODE_ALWAYS`, so the panel keeps drawing, the
 ## pointer stays free and the open/close tweens keep running while the world is stopped.
 func _sync_pause() -> void:
-	var wanted: bool = settings_open() or tasks_open()
+	var wanted: bool = settings_open() or tasks_open() or dialogue_open()
 	if get_tree() != null:
 		get_tree().paused = wanted
+	# The marker is off while a panel is up. It is drawn over the dim, and a world-space
+	# readout floating above a menu is the one thing on screen that would not be part of
+	# the menu.
+	if _wayfinder != null:
+		_wayfinder.set("suppressed", wanted)
 	if wanted:
 		_append_log("Time holds while the panel is open.", "info")
 
@@ -1044,6 +1257,7 @@ func _refresh() -> void:
 	_set_bar(_refinement_bar, Cultivation.cycle_ratio())
 
 	_crystals_label.text = "Crystals %d" % PlayerData.crystals
+	_refresh_path()
 	_refresh_tracker()
 
 	if Cultivation.can_break_through():
@@ -1061,6 +1275,7 @@ func _refresh() -> void:
 		var cap: float = PlayerData.get_cap(stat_id)
 		var is_passive: bool = PlayerData.kind(stat_id) == PlayerData.KIND_PASSIVE
 		(_value_labels[stat_id] as Label).text = _stat_readout(stat_id)
+		_refresh_stat_rank(stat_id)
 		# For a passive stat the cap *is* the value, so a "how full" bar would
 		# always read 100%. Show how far the next rank is instead.
 		var fill: float = clampf(PlayerData.get_value(stat_id) / maxf(0.001, cap), 0.0, 1.0)
@@ -1070,6 +1285,7 @@ func _refresh() -> void:
 		(_xp_bars[stat_id] as ProgressBar).visible = not is_passive
 		_set_bar(_xp_bars[stat_id] as ProgressBar, PlayerData.progress_ratio(stat_id))
 
+	_refresh_techniques()
 	_refresh_drills()
 	_refresh_auras()
 	_sync_sliders()
@@ -1184,7 +1400,8 @@ func _apply_ui_scale() -> void:
 	var waiting: bool = false
 	for node in _root.get_children():
 		var panel := node as Control
-		if panel == null or panel == _modal or panel == _tasks_modal:
+		if panel == null or panel == _modal or panel == _tasks_modal \
+				or panel == _wayfinder:
 			continue
 		# A panel that has not been laid out yet has no size to pin to. Waiting is not
 		# optional: pinning a zero-size panel scales it about its top-left corner, which
@@ -1233,6 +1450,21 @@ func _on_ui_scale_pressed(step: float) -> void:
 ## The task panel: what the elder wants, how far along it is, and the button that
 ## hands it in. Built in code for the same reason the settings are: it is a list of
 ## generated controls rather than a fixed layout.
+## The compass at the edge of the screen, pointing at the next site to walk to.
+##
+## Built in code like the modals, and for a related reason: it is not a panel with a
+## place on screen, it is a layer over the whole of it, and a node in the scene file would
+## have to be excluded from the layout pass by hand every time that pass changes. Preloaded
+## rather than added to the scene so there is exactly one place that decides whether the
+## HUD has one.
+const Wayfinder := preload("res://scripts/ui/wayfinder.gd")
+
+
+func _build_wayfinder() -> void:
+	_wayfinder = Wayfinder.new()
+	_root.add_child(_wayfinder)
+
+
 func _build_tasks_modal() -> void:
 	_tasks_modal = Control.new()
 	_tasks_modal.name = "TasksModal"
@@ -1289,6 +1521,8 @@ func _build_tasks_modal() -> void:
 	_tasks_detail.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_tasks_body.add_child(_tasks_detail)
 
+	_build_wares(_tasks_body)
+
 	var footer := HBoxContainer.new()
 	footer.name = "Footer"
 	footer.add_theme_constant_override("separation", 8)
@@ -1308,17 +1542,199 @@ func _build_tasks_modal() -> void:
 	_tasks_body.add_child(footer)
 
 
+# -------------------------------------------------------------------- talking
+
+## The band at the foot of the screen that somebody talks to you through.
+##
+## Built once and filled from the story, which is what keeps the interface out of the
+## dialogue: this file knows there is a speaker, a line and a list of answers, and nothing at
+## all about who is talking or what an answer does. Adding a fifth person to the world is a
+## table entry in `story.gd` and no change here whatsoever.
+func _build_dialogue() -> void:
+	_dialogue = Control.new()
+	_dialogue.name = "Dialogue"
+	_dialogue.visible = false
+	_dialogue.anchor_right = 1.0
+	_dialogue.anchor_bottom = 1.0
+	# Pass rather than stop: the world behind a conversation is the world the conversation is
+	# happening in, and the camera is still allowed to be looked through. Only the panel takes
+	# the mouse, and only because a choice has to be clickable.
+	_dialogue.mouse_filter = Control.MOUSE_FILTER_PASS
+	_root.add_child(_dialogue)
+
+	var holder := VBoxContainer.new()
+	holder.name = "Holder"
+	holder.anchor_left = 0.0
+	holder.anchor_right = 1.0
+	holder.anchor_top = 1.0
+	holder.anchor_bottom = 1.0
+	holder.offset_left = 0.0
+	holder.offset_right = 0.0
+	holder.offset_top = -246.0
+	holder.offset_bottom = -18.0
+	holder.alignment = BoxContainer.ALIGNMENT_END
+	holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_dialogue.add_child(holder)
+
+	var centre := CenterContainer.new()
+	centre.name = "Centre"
+	centre.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	holder.add_child(centre)
+
+	_dialogue_panel = PanelContainer.new()
+	_dialogue_panel.name = "DialoguePanel"
+	_dialogue_panel.custom_minimum_size = Vector2(660, 0)
+	_dialogue_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	_dialogue_panel.add_theme_stylebox_override("panel", _panel_style())
+	centre.add_child(_dialogue_panel)
+
+	var body := VBoxContainer.new()
+	body.name = "Body"
+	body.add_theme_constant_override("separation", 8)
+	_dialogue_panel.add_child(body)
+	body.add_child(_make_band(Color("cfe9ff"), 4))
+
+	_dialogue_speaker = _make_label("", 18, Color("ffd76e"))
+	body.add_child(_dialogue_speaker)
+	_dialogue_line = _make_label("", 14, Color("eef3f8"))
+	_dialogue_line.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	body.add_child(_dialogue_line)
+
+	_dialogue_options = VBoxContainer.new()
+	_dialogue_options.name = "Options"
+	_dialogue_options.add_theme_constant_override("separation", 4)
+	body.add_child(_dialogue_options)
+
+	_dialogue_hint = _make_label("", 11, Color("8b95a3"))
+	body.add_child(_dialogue_hint)
+
+
+func dialogue_open() -> bool:
+	return _dialogue != null and _dialogue.visible
+
+
+## True when the key belonged to the conversation.
+func _handle_dialogue_key(event: InputEvent) -> bool:
+	if event.is_action_pressed("ui_cancel") or event.is_action_pressed("interact"):
+		Story.close()
+		return true
+	var key: InputEventKey = event as InputEventKey
+	if key == null or not key.pressed or key.echo:
+		return false
+	var index: int = -1
+	match key.keycode:
+		KEY_1: index = 0
+		KEY_2: index = 1
+		KEY_3: index = 2
+	if index < 0 or index >= _dialogue_buttons.size():
+		return false
+	_choose(index)
+	return true
+
+
+## Answers with the option at `index`, then leaves the conversation on the closing line — a
+## decision that snapped the panel shut the instant it was made would hide the reply, and the
+## reply is where the world tells you what you just did.
+func _choose(index: int) -> void:
+	var options: Array = Story.options()
+	if index < 0 or index >= options.size():
+		Story.close()
+		return
+	Story.choose(String((options[index] as Dictionary)["key"]))
+	Audio.play("ui_select", -4.0)
+	_refresh_dialogue()
+
+
+func _on_conversation_changed() -> void:
+	if not Story.talking():
+		_hide_dialogue()
+		return
+	_refresh_dialogue()
+	_show_dialogue()
+
+
+func _show_dialogue() -> void:
+	if _dialogue == null or _dialogue.visible:
+		return
+	close_settings()
+	close_tasks()
+	_dialogue.visible = true
+	if _dialogue_tween != null and _dialogue_tween.is_valid():
+		_dialogue_tween.kill()
+	_dialogue_panel.modulate = Color(1, 1, 1, 0)
+	_dialogue_panel.position.y += 18.0
+	_dialogue_tween = create_tween().set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_OUT)
+	_dialogue_tween.tween_property(_dialogue_panel, "modulate:a", 1.0, 0.14)
+	_dialogue_tween.parallel().tween_property(_dialogue_panel, "position:y",
+		_dialogue_panel.position.y - 18.0, 0.14)
+	Audio.play("ui_toggle", -8.0)
+	_sync_pause()
+
+
+func _hide_dialogue() -> void:
+	if _dialogue == null or not _dialogue.visible:
+		return
+	_dialogue.visible = false
+	if _dialogue_tween != null and _dialogue_tween.is_valid():
+		_dialogue_tween.kill()
+	_dialogue_panel.modulate = Color(1, 1, 1, 1)
+	Audio.play("ui_click", -10.0)
+	_sync_pause()
+
+
+## Rebuilds the band from the conversation on screen. Rebuilt rather than updated because the
+## list of answers changes length — a conversation with three answers is three buttons, and a
+## conversation with none is none.
+func _refresh_dialogue() -> void:
+	if _dialogue == null:
+		return
+	var talk: Dictionary = Story.conversation()
+	_dialogue_speaker.text = "%s · %s" % [
+		String(talk.get("speaker", "")), String(talk.get("role", "")),
+	]
+	_dialogue_line.text = String(talk.get("line", ""))
+	for button: Node in _dialogue_buttons:
+		button.queue_free()
+	_dialogue_buttons.clear()
+	var options: Array = talk.get("options", [])
+	for i in options.size():
+		var option: Dictionary = options[i]
+		var button := Button.new()
+		button.name = "Option%d" % (i + 1)
+		button.text = "%d.  %s\n      %s" % [
+			i + 1, String(option["label"]), String(option["blurb"]),
+		]
+		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
+		button.focus_mode = Control.FOCUS_NONE
+		button.mouse_filter = Control.MOUSE_FILTER_STOP
+		button.pressed.connect(_choose.bind(i))
+		_dialogue_options.add_child(button)
+		_dialogue_buttons.append(button)
+	if options.is_empty():
+		var leave := Button.new()
+		leave.name = "Leave"
+		leave.text = "Step away"
+		leave.focus_mode = Control.FOCUS_NONE
+		leave.pressed.connect(Story.close)
+		_dialogue_options.add_child(leave)
+		_dialogue_buttons.append(leave)
+	_dialogue_hint.text = ("Press 1-%d to answer · Esc to step away" % options.size()
+		if not options.is_empty() else "Esc to step away")
+
+
 func tasks_open() -> bool:
 	return _tasks_modal != null and _tasks_modal.visible
 
 
-## Opens the task panel. Called by the elder when you talk to him.
+## Opens the elder's panel: the task above, the wares below. Called by the elder when
+## you talk to him.
 func show_tasks() -> void:
 	if _tasks_modal == null:
 		return
 	# One panel at a time, for the same reason the settings panel does it.
 	close_settings()
 	_refresh_tasks()
+	_refresh_wares()
 	_tasks_modal.visible = true
 	if _tasks_tween != null and _tasks_tween.is_valid():
 		_tasks_tween.kill()
@@ -1395,8 +1811,179 @@ func _refresh_tasks() -> void:
 	)
 
 
+# ------------------------------------------------------------------------ wares
+
+## Elder Shufen's other counter: permanent upgrades bought with crystals.
+##
+## It rides in the same modal as the task on purpose. Both are "what the elder has for
+## you", they are read at the same moment standing in the same place, and splitting them
+## across two panels or two keys would mean talking to him twice to do one thing. The
+## list scrolls because the shelf grows as wares are added and a panel whose height
+## follows its contents eventually stops fitting on a short canvas.
+const WARE_SCROLL_HEIGHT := 172
+
+## One entry per ware, holding the labels whose text and colour change. Built once and
+## *updated* afterwards rather than rebuilt: the shelf's contents are a constant, so
+## rebuilding it would churn eight nodes on every crystal the player picks up, and a row
+## freed with `queue_free` is still a child for the rest of the frame — for one frame the
+## shelf would show the old prices and the new ones stacked in a scroll box that measures
+## them both.
+var _ware_rows: Dictionary = {}
+
+
+func _build_wares(parent: VBoxContainer) -> void:
+	parent.add_child(_make_rule(Color("7fd6c0")))
+	var head := HBoxContainer.new()
+	head.name = "WareHead"
+	var title := _make_label("THE ELDER'S SHELF", 14, Color("7fd6c0"))
+	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	head.add_child(title)
+	_purse_label = _make_label("", 13, Color("ffd76e"))
+	head.add_child(_purse_label)
+	parent.add_child(head)
+
+	_wares_scroll = ScrollContainer.new()
+	_wares_scroll.name = "Wares"
+	_wares_scroll.custom_minimum_size = Vector2(0, WARE_SCROLL_HEIGHT)
+	_wares_scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	_wares_scroll.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	parent.add_child(_wares_scroll)
+
+	_wares_body = VBoxContainer.new()
+	_wares_body.name = "WareRows"
+	_wares_body.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_wares_body.add_theme_constant_override("separation", 4)
+	_wares_scroll.add_child(_wares_body)
+
+	for ware: Dictionary in Shop.WARES:
+		_wares_body.add_child(_make_ware_row(ware))
+
+
+func _make_ware_row(ware: Dictionary) -> Control:
+	var id: String = String(ware["id"])
+
+	var row := HBoxContainer.new()
+	row.name = "Ware_%s" % id
+	row.add_theme_constant_override("separation", 8)
+
+	var ware_name := _make_label(String(ware["name"]), 13, Color("f2f6fb"))
+	ware_name.name = "Name"
+	ware_name.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ware_name.tooltip_text = String(ware["detail"])
+	row.add_child(ware_name)
+
+	var detail := _make_label(String(ware["detail"]), 12, Color("9aa4b0"))
+	detail.name = "Detail"
+	detail.custom_minimum_size = Vector2(150, 0)
+	row.add_child(detail)
+
+	var cost := _make_label("", 13, Color("7d868f"))
+	cost.name = "Cost"
+	cost.custom_minimum_size = Vector2(34, 0)
+	cost.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	row.add_child(cost)
+
+	var buy := Button.new()
+	buy.name = "Buy_%s" % id
+	buy.text = "Buy"
+	buy.focus_mode = Control.FOCUS_NONE
+	buy.pressed.connect(_on_buy_pressed.bind(id))
+	row.add_child(buy)
+
+	_ware_rows[id] = {"name": ware_name, "detail": detail, "cost": cost, "buy": buy}
+	return row
+
+
+## Writes the shelf's state into the rows that already exist.
+##
+## The price is coloured against the purse rather than merely printed: at a glance the
+## shelf should say what you can afford *now*, not what everything costs.
+func _refresh_wares() -> void:
+	if _wares_body == null:
+		return
+	_purse_label.text = "%d crystals" % PlayerData.crystals
+	for ware: Dictionary in Shop.WARES:
+		var id: String = String(ware["id"])
+		if not _ware_rows.has(id):
+			continue
+		var row: Dictionary = _ware_rows[id]
+		var offer: bool = Shop.available(id)
+		var affordable: bool = PlayerData.crystals >= Shop.price(id)
+
+		var name_label: Label = row["name"]
+		name_label.add_theme_color_override(
+			"font_color", Color("f2f6fb") if offer else Color("6f7885")
+		)
+		var detail_label: Label = row["detail"]
+		detail_label.text = String(ware["detail"]) if offer else "all it can give"
+		var cost_label: Label = row["cost"]
+		cost_label.text = "%d" % Shop.price(id)
+		cost_label.add_theme_color_override(
+			"font_color", Color("ffd76e") if affordable and offer else Color("7d868f")
+		)
+		var buy: Button = row["buy"]
+		buy.disabled = not offer or not affordable
+		buy.text = "Buy" if offer else "Sold out"
+
+
+func _on_buy_pressed(id: String) -> void:
+	if Shop.buy(id):
+		_refresh_wares()
+
+
 func _on_crystals_changed(_total: int) -> void:
 	_refresh_accum = REFRESH_INTERVAL
+	# The shelf is priced against the purse, so every crystal moving is a reason for
+	# the price colours to change. Only while it is readable, though: this fires on
+	# every pick-up on the map.
+	if tasks_open():
+		_refresh_wares()
+
+
+## The line at the top of the tracker: where you are on the path, and the one thing to do
+## next.
+##
+## It sits above the elder's task for one reason: the path is the spine and a task is a
+## favour. A player who has forgotten both should be reminded of the wall in front of them
+## before they are reminded of a chore, and this is the only place in the interface where
+## the sequence of the whole game is stated at all.
+##
+## The detail line is the *long* explanation — why the thing is where it is, and what it
+## wants — and it rides in the tooltip rather than on screen, because the answer to "what do
+## I do" has to fit on one line while the answer to "why" does not.
+func _refresh_path() -> void:
+	var goal: Dictionary = Wards.goal()
+	var key: String = String(goal.get("key", ""))
+	var tint := Color("b9c2cc")
+	match key:
+		"cross":
+			tint = Color("7dff9b")
+		"warden":
+			tint = Color("ff9d5c")
+		"done":
+			tint = Color("ffd76e")
+		_:
+			tint = Color("9fd4ff")
+	_path_chapter.text = "THE PATH · %s" % String(goal.get("chapter", "")).to_upper()
+	_path_name.text = String(goal.get("title", ""))
+	_path_name.add_theme_color_override("font_color", tint)
+	_path_progress.text = String(goal.get("progress_text", ""))
+	_path_progress.add_theme_color_override("font_color", Color("b9c2cc"))
+	_set_bar(_path_bar, float(goal.get("progress", 0.0)))
+	_quest_panel.tooltip_text = String(goal.get("detail", ""))
+
+
+## A crossing is the one moment this HUD should shout: the wall the player has been looking
+## at for twenty minutes is about to be gone, and a line in the event log is not enough for
+## that. Alpha and colour only, so it cannot move a panel the layout pass owns.
+func _on_ward_passed(_index: int, gate: Dictionary) -> void:
+	_queue_refresh()
+	if _path_name == null:
+		return
+	_path_name.add_theme_color_override("font_color", Color("ffffff"))
+	var pulse := create_tween()
+	pulse.tween_property(_path_name, "modulate", Color("ffd76e"), 0.12)
+	pulse.tween_property(_path_name, "modulate", Color.WHITE, 0.5)
 
 
 ## The always-on task line. It exists so the player never has to walk back to the fire
@@ -1454,14 +2041,17 @@ func _update_status() -> void:
 
 	_status_label.text = (
 		"WASD move · Shift run · Space jump · click to strike · Q dash · C cultivate · B break through\n"
-		+ "E talk to the elder · 1/2/3 drill the body · X qi pressure · Tab settings · V stats · F5 save\n"
-		+ "%d FPS%s%s%s%s" % [Engine.get_frames_per_second(), pointer, state, dash, zone]
+		+ "E talk to the elder · 1/2/3 drill the body · X qi pressure · T recall · Tab settings · V stats\n"
+		+ "%d FPS%s%s%s%s%s" % [Engine.get_frames_per_second(), pointer, state, dash, zone,
+			_attune_state()]
 	)
+	# Trimmed to two lines, and the two lines that stay are the ones that are not said
+	# anywhere else on screen. The rest — the drill keys, the elder, the spirit pillars — is
+	# in the status strip at the foot of the interface, and the room the prose was taking is
+	# what the technique list above it now occupies.
 	_hint.text = (
-		"Click (or F) to strike — posts to raise ATTACK, raiders for crystals.\n"
-		+ "Tap 1, 2 or 3 to drill BODY — it costs blood, not qi, and every BODY rank\n"
-		+ "widens your HP cap. Talk to the elder by the fire for tasks that unlock\n"
-		+ "air jumps and a dash. Cultivate inside a spirit pillar for more qi per second."
+		"Click (or F) to strike — posts raise ATTACK, raiders drop crystals.\n"
+		+ "Tap 1, 2 or 3 to drill BODY: it costs blood, not qi, and widens your HP cap."
 	)
 	_refresh_pressure()
 
@@ -1510,6 +2100,22 @@ func _refresh_pressure() -> void:
 			float(state["radius"]), float(state["max_radius"]), cost
 		]
 	_pressure_label.add_theme_color_override("font_color", tint)
+
+
+## The recall meter, on the same line as everything else that is a *state you are in*. It is
+## the one piece of information about the technique that the player needs while it is
+## happening: whether it is still counting, because letting go at ninety per cent wastes the
+## whole attunement.
+func _attune_state() -> String:
+	var player: Node = get_tree().get_first_node_in_group("player")
+	if player == null or not player.has_method("recall_state"):
+		return ""
+	var state: Dictionary = player.call("recall_state")
+	if not bool(state.get("attuning", false)):
+		return ""
+	return "   ·   ATTUNING %.0f%% — hold T, a blow breaks it" % (
+		float(state.get("progress", 0.0)) * 100.0
+	)
 
 
 func _pressure_skill() -> Node3D:

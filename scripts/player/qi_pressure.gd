@@ -97,9 +97,13 @@ func unlocked() -> bool:
 ## Defined as the passive regeneration rate at `SUSTAIN_QI` rather than picked, which is
 ## what makes "sustainable at a thousand" a fact about the code instead of a claim about
 ## the balance. Retune the regen constant and this follows it.
+## Deep Well takes a third off the cost of holding the field. It is the one attainment that
+## is about the technique rather than about the body, and it is the reason a deep dantian
+## does not merely last longer in the field — it changes what the field *is*: a burst you
+## leave becomes something you can keep up through a whole camp.
 func drain_per_second() -> float:
 	var share: float = float(PlayerData.RESOURCE_REGEN["qi"])
-	return share * SUSTAIN_QI
+	return share * SUSTAIN_QI * PlayerData.pressure_multiplier()
 
 
 ## The radius the current capacity allows, before the pool level is taken into account.

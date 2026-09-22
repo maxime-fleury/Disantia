@@ -126,6 +126,50 @@ mouse_filter = 2
 layout_mode = 2
 theme_override_constants/separation = 3
 
+[node name="PathRow" type="VBoxContainer" parent="HudRoot/QuestPanel/Body"]
+layout_mode = 2
+theme_override_constants/separation = 2
+
+[node name="PathHead" type="HBoxContainer" parent="HudRoot/QuestPanel/Body/PathRow"]
+layout_mode = 2
+theme_override_constants/separation = 7
+
+[node name="PathChapter" type="Label" parent="HudRoot/QuestPanel/Body/PathRow/PathHead"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.62, 0.76, 0.92, 1)
+text = "THE PATH · THE HOME WARD"
+
+[node name="PathName" type="Label" parent="HudRoot/QuestPanel/Body/PathRow/PathHead"]
+unique_name_in_owner = true
+layout_mode = 2
+size_flags_horizontal = 3
+theme_override_font_sizes/font_size = 12
+text = "Find your first spirit zone"
+text_overrun_behavior = 3
+
+[node name="PathProgressRow" type="HBoxContainer" parent="HudRoot/QuestPanel/Body/PathRow"]
+layout_mode = 2
+theme_override_constants/separation = 6
+
+[node name="PathBar" type="ProgressBar" parent="HudRoot/QuestPanel/Body/PathRow/PathProgressRow"]
+unique_name_in_owner = true
+custom_minimum_size = Vector2(0, 6)
+layout_mode = 2
+size_flags_horizontal = 3
+size_flags_vertical = 4
+max_value = 1.0
+step = 0.001
+show_percentage = false
+
+[node name="PathProgress" type="Label" parent="HudRoot/QuestPanel/Body/PathRow/PathProgressRow"]
+unique_name_in_owner = true
+layout_mode = 2
+theme_override_font_sizes/font_size = 11
+theme_override_colors/font_color = Color(0.72, 0.76, 0.82, 1)
+text = ""
+
 [node name="Header" type="HBoxContainer" parent="HudRoot/QuestPanel/Body"]
 layout_mode = 2
 theme_override_constants/separation = 6

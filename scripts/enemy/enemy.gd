@@ -19,6 +19,9 @@ extends CharacterBody3D
 signal died(enemy: Node3D)
 signal respawned(enemy: Node3D)
 
+const DamagePopup := preload("res://scripts/ui/damage_popup.gd")
+const QiBolt := preload("res://scripts/enemy/qi_bolt.gd")
+
 enum State {
 	GUARD,   ## Standing at the fire, watching.
 	CHASE,   ## Moving to strike range.
@@ -54,10 +57,54 @@ enum State {
 @export var attack_windup: float = 0.45
 @export var turn_speed: float = 7.0
 
+@export_group("Champion")
+## Set on the champions who hold the spirit zones, and empty on every raider. It is the
+## whole difference between the two: a champion has a name, a plate over its head, a bigger
+## body, more health, a permanent reward and no respawn. One script with a switch rather
+## than a subclass, because everything else about the fight — the chase, the leash, the
+## windup you can step out of — should be *identical*: the boss of a ring is the same fight
+## you have already learned, and re-learning it is not what a champion is for.
+@export var display_name: String = ""
+@export var warden_id: String = ""
+## Its size. A champion is a head taller than the raiders it stands with, which is the only
+## signal of rank that works at forty metres in fog.
+@export var scale_factor: float = 1.0
+## Permanent cap grants on the kill, by stat id. Paid once, and only once: a champion does
+## not come back.
+@export var reward_caps: Dictionary = {}
+## The aura it wears, so the ring's colour follows its champion around.
+@export var rune_color: Color = Color("ffd76e")
+
+@export_group("Ranged")
+## Damage per qi bolt, and zero on everything but the Ninth. This is the one enemy in the
+## game that can hurt you from further than a stride away, and that is the point of it: for
+## twenty-five stages, stepping back has been a complete defence, and the last fight is
+## where the player has to find a second answer.
+@export var bolt_damage: float = 0.0
+@export var bolt_interval: float = 3.6
+@export var bolt_speed: float = 18.0
+@export var bolt_range: float = 26.0
+## It will not throw one closer than this: a bolt at arm's length is a melee hit with extra
+## steps, and the wind-up is what gives the player time to close and punish.
+@export var bolt_min_range: float = 6.0
+@export var bolt_windup: float = 0.6
+
 @export_group("Rewards")
 ## Crystals dropped. Two of these plus the ATTACK training is the whole payout.
 @export var crystals: int = 3
 @export var attack_xp: float = 26.0
+
+## Seconds a body spends off its feet after a hard landing shakes the ground under it.
+const STAGGER_SECONDS := 1.4
+
+@export_group("Feedback")
+## Seconds an enemy's own surfaces stay lit after a blow.
+##
+## A raider that does not visibly react is a raider you are not sure you hit; the flinch
+## clip, the sound and the number all say it, but the *body* saying it is the one that reads
+## at a glance in the middle of a fight. A tenth of a second is long enough to see and short
+## enough that a fast swing does not leave the whole camp glowstick-lit.
+@export var hit_flash_seconds: float = 0.12
 
 @export_group("Reset")
 ## Seconds after a kill before this raider is back at its fire, so a camp is a place
@@ -74,6 +121,9 @@ var _anim: AnimationPlayer
 var _clips: Dictionary = {}
 var _current: String = ""
 var _aggro: bool = false
+## Set by a spared camp: does not hunt, still defends itself.
+var _pacified: bool = false
+var _provoked: bool = false
 var _attack_timer: float = 0.0
 var _swing_at: float = -1.0
 var _down_timer: float = 0.0
@@ -83,14 +133,33 @@ var _health_fill: MeshInstance3D
 var _bar_full_width: float = 0.9
 var _gravity: float = 9.8
 var _died_announced: bool = false
+## Seconds left of being knocked off its feet. A staggered body does not walk, chase or
+## swing: it is the one state in this file that is not about the player at all.
+var _stagger: float = 0.0
+var _flash: float = 0.0
+var _flash_materials: Array[StandardMaterial3D] = []
+var _bolt_timer: float = 0.0
+var _bolt_windup_at: float = -1.0
+var _rune: OmniLight3D
+
+
+## True for the named champions who hold the rings' spirit zones.
+func is_champion() -> bool:
+	return warden_id != ""
 
 
 func _ready() -> void:
 	add_to_group("enemy")
+	if is_champion():
+		add_to_group("champion")
 	_gravity = float(ProjectSettings.get_setting("physics/3d/default_gravity", 9.8))
 	hp = max_hp
 	_build_body()
 	_build_health_bar()
+	if is_champion():
+		_build_rune()
+		_build_nameplate()
+		_bolt_timer = bolt_interval
 
 
 ## The raider is the player's own character model with a different robe. The kit ships
@@ -119,7 +188,7 @@ func _fit_rig() -> void:
 	var bounds: AABB = _bounds(_rig)
 	if bounds.size.y <= 0.001:
 		return
-	var factor: float = target_height / bounds.size.y
+	var factor: float = target_height * scale_factor / bounds.size.y
 	_rig.scale = Vector3.ONE * factor
 	_rig.position = Vector3(
 		-(bounds.position.x + bounds.size.x * 0.5) * factor,
@@ -134,8 +203,11 @@ func _tint() -> void:
 	for mesh in _meshes(_rig):
 		for surface in mesh.mesh.get_surface_count():
 			var material := StandardMaterial3D.new()
-			material.albedo_color = robe_color
+			# A champion wears the colour of the ward it stands behind, which is how the map,
+		# the fence and the enemy in front of you all say the same thing at once.
+			material.albedo_color = rune_color * 0.65 if is_champion() else robe_color
 			material.roughness = 0.85
+			material.emission = Color("ffd9a0")
 			# Trim, not a full repaint: the imported texture keeps the folds, and the
 			# multiply is what makes it read as cloth rather than as paint.
 			material.vertex_color_use_as_albedo = true
@@ -143,6 +215,7 @@ func _tint() -> void:
 			material.emission = trim_color
 			material.emission_energy_multiplier = 0.0
 			mesh.set_surface_override_material(surface, material)
+			_flash_materials.append(material)
 
 
 func _bounds(node: Node, from: Transform3D = Transform3D.IDENTITY) -> AABB:
@@ -221,12 +294,29 @@ func _play(clip: String) -> void:
 
 ## A short billboarded bar over the head. Out of sight until the first blow lands: a
 ## full bar over every idle guard would turn a quiet camp into a wall of meters.
+## The champion's rune: a small light that breathes, so a named enemy is visible through the
+## trees it is standing in. Faint, and short-range: it is a marker, not a torch.
+func _build_rune() -> void:
+	_rune = OmniLight3D.new()
+	_rune.name = "Rune"
+	_rune.light_color = rune_color
+	_rune.light_energy = 1.6
+	_rune.omni_range = 5.5 * scale_factor
+	_rune.shadow_enabled = false
+	_rune.position = Vector3(0.0, target_height * 0.6, 0.0)
+	add_child(_rune)
+
+
 func _build_health_bar() -> void:
 	_health_bar = Node3D.new()
 	_health_bar.name = "HealthBar"
-	_health_bar.position = Vector3(0.0, target_height + 0.55, 0.0)
-	_health_bar.visible = false
+	_health_bar.position = Vector3(0.0, target_height * scale_factor + 0.55, 0.0)
+	# A champion's bar is up before the first blow. A raider's appears when it is hit; a boss
+	# whose health you cannot see is a boss you cannot tell you are winning against.
+	_health_bar.visible = is_champion()
 	add_child(_health_bar)
+	if is_champion():
+		_bar_full_width = 1.7 * scale_factor
 
 	var plate := MeshInstance3D.new()
 	var plate_mesh := QuadMesh.new()
@@ -246,6 +336,25 @@ func _build_health_bar() -> void:
 	_health_bar.add_child(_health_fill)
 
 
+## The name over a champion's head. Built here rather than in the scene so there is exactly
+## one enemy type that can have one.
+func _build_nameplate() -> void:
+	var plate := Label3D.new()
+	plate.name = "Nameplate"
+	plate.text = display_name
+	plate.font_size = 96
+	plate.pixel_size = 0.0034 * scale_factor
+	plate.outline_size = 22
+	plate.outline_modulate = Color(0.04, 0.03, 0.05, 0.9)
+	plate.modulate = rune_color.lightened(0.35)
+	plate.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	plate.no_depth_test = true
+	plate.shaded = false
+	plate.render_priority = 3
+	plate.position = Vector3(0.0, target_height * scale_factor + 1.0, 0.0)
+	add_child(plate)
+
+
 func _bar_material(tint: Color, priority: int) -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -259,6 +368,19 @@ func _bar_material(tint: Color, priority: int) -> StandardMaterial3D:
 
 
 # ------------------------------------------------------------------- the fight
+
+## Spared at a fire by the road: stands where it is, watches, and does not hunt. The one
+## thing the flag does is refuse to *start* a fight — the camp still exists, its raiders are
+## still bodies in the world, and the difference is entirely in who swings first.
+func pacify() -> void:
+	_pacified = true
+	_provoked = false
+	_aggro = false
+
+
+func is_pacified() -> bool:
+	return _pacified
+
 
 func is_dead() -> bool:
 	return state == State.DOWN
@@ -277,10 +399,16 @@ func health_ratio() -> float:
 func take_hit(damage: float, from: Vector3 = Vector3.ZERO) -> float:
 	if is_dead():
 		return 0.0
+	# A spared raider that has been struck is in a fight from that moment on, whatever it was
+	# told about the road. See `_may_pursue`.
+	_provoked = true
 	var dealt: float = maxf(0.0, damage)
 	hp = maxf(0.0, hp - dealt)
 	_health_bar.visible = true
 	_update_health_bar()
+	_show_damage(dealt)
+	_flash = hit_flash_seconds
+	_apply_flash()
 	_flinch = 0.35
 	_play("RecieveHit")
 	# Being hit from outside your notice is the one thing that should look up. A raider
@@ -304,11 +432,111 @@ func _die(from: Vector3) -> void:
 	PlayerData.gain("attack", attack_xp)
 	Quests.report("kill", 1.0)
 	Quests.report("crystals", float(crystals))
-	PlayerData.log_message.emit(
-		"Raider down. +%d crystals." % crystals, "gain"
-	)
+	if is_champion():
+		_fell_champion()
+	else:
+		PlayerData.log_message.emit(
+			"Raider down. +%d crystals." % crystals, "gain"
+		)
 	Audio.play_at("drop", global_position, -2.0, 0.85)
 	died.emit(self)
+
+
+## A champion does not come back, and it leaves something behind that no raider does.
+##
+## Both halves are the point. The permanent reward is what makes a champion a *chapter*:
+## the ring it holds is one you do not have to fight through again. And the caps it pays are
+## granted through the same door as everything else — `grant_cap` — so they are caps rather
+## than free stats: the ATTACK still has to be trained, and the fight only widened how far.
+func _fell_champion() -> void:
+	respawn_seconds = INF
+	Wards.mark_warden_down(warden_id)
+	var paid: Array = []
+	for stat_id: String in reward_caps:
+		var amount: float = float(reward_caps[stat_id])
+		var granted: float = PlayerData.grant_cap(stat_id, amount)
+		if granted > 0.0:
+			paid.append("%s +%s" % [PlayerData.label(stat_id), String.num(granted, 1)])
+	PlayerData.log_message.emit(
+		"%s falls. +%d crystals%s" % [
+			display_name, crystals,
+			"" if paid.is_empty() else " · " + ", ".join(paid),
+		],
+		"breakthrough"
+	)
+	PlayerData.log_message.emit(
+		"%s is awake, and there is no one left standing on it." % Wards.zone_name(int(warden_id_ring())),
+		"cultivate"
+	)
+	Audio.play_at("breakthrough", global_position, 0.0, 1.0)
+
+
+## The ring this champion holds, found by its id rather than passed in, so the camps and
+## the wards autoload cannot disagree about which zone a champion belongs to.
+func warden_id_ring() -> int:
+	for gate: Dictionary in Wards.GATES:
+		var warden: Dictionary = gate["warden"]
+		if String(warden["id"]) == warden_id:
+			return int(warden["ring"])
+	return 0
+
+
+## The number that pops off the body. Spawned at chest height rather than at the head, so a
+## number is not hidden behind the health bar of the thing that produced it.
+func _show_damage(amount: float) -> void:
+	if amount <= 0.0:
+		return
+	var tint: Color = rune_color if is_champion() else Color("ffd9d9")
+	DamagePopup.spawn(
+		get_parent(),
+		global_position + Vector3(0.0, target_height * scale_factor * 0.62, 0.0),
+		amount, tint
+	)
+
+
+## Lights every surface on the body for the remainder of the flash. Emission rather than
+## albedo, because a raider in shadow has to flash too, and it decays on the clock rather
+## than on a tween: an enemy can be hit three times a second and three tweens fighting over
+## one material is how a body gets stuck glowing after the fight ends.
+func _apply_flash() -> void:
+	var amount: float = clampf(_flash / maxf(0.01, hit_flash_seconds), 0.0, 1.0)
+	for material: StandardMaterial3D in _flash_materials:
+		material.emission_energy_multiplier = 0.0 if amount <= 0.0 else amount * 0.9
+
+
+## Knocked off its feet by a landing. `away` is the direction to be pushed in, and an empty
+## vector means the shake was centred on the body itself.
+##
+## A stagger is deliberately not damage: what was bought by landing hard is *time* — the
+## half-second of a raider getting up, and the freedom to walk past it and pick which of its
+## friends to open on. A shockwave that also hurt would make the jump tree a damage tree, and
+## the jump tree is supposed to be about where the body can go.
+func stagger(away: Vector3) -> void:
+	if is_dead():
+		return
+	var push: Vector3 = away
+	push.y = 0.0
+	if push.length_squared() < 0.0001:
+		push = Vector3(randf_range(-1.0, 1.0), 0.0, randf_range(-1.0, 1.0))
+	velocity = push.normalized() * 6.5
+	velocity.y = 3.2
+	_stagger = STAGGER_SECONDS
+	# The swing in progress is dropped: a raider that was mid-axe when the ground moved should
+	# not complete the blow it was aiming at the ground you used to be standing on.
+	_attack_timer = maxf(_attack_timer, STAGGER_SECONDS)
+	_swing_at = -1.0
+	# And it notices, which is the honest thing for it to do about being thrown.
+	_aggro = true
+	_play("RecieveHit")
+	_flash = hit_flash_seconds
+	_apply_flash()
+	Audio.play_at("impact", global_position, -3.0, 0.75)
+
+
+## Seconds left before a staggered body is on its feet again. Zero for everything upright,
+## which is what the messenger and the tests read.
+func stagger_left() -> float:
+	return _stagger
 
 
 func _update_health_bar() -> void:
@@ -323,6 +551,11 @@ func _update_health_bar() -> void:
 ## foot, and outside the camp wards.
 func _may_pursue() -> bool:
 	if is_dead() or _player == null or not is_instance_valid(_player):
+		return false
+	# Spared: this one will not start anything. It will finish something, though — a raider
+	# that has been hit is not standing on the road's business any more, it is in a fight,
+	# and a mercy that also made a body invulnerable would not be a mercy.
+	if _pacified and not _provoked:
 		return false
 	var zone: Node = get_tree().get_first_node_in_group("safe_zone")
 	if zone != null and zone.has_method("contains"):
@@ -343,8 +576,23 @@ func _may_pursue() -> bool:
 func _physics_process(delta: float) -> void:
 	if _player == null or not is_instance_valid(_player):
 		_player = get_tree().get_first_node_in_group("player") as CharacterBody3D
+	if _stagger > 0.0:
+		_stagger = maxf(0.0, _stagger - delta)
+		# Thrown, not walking: the push bleeds off and gravity does the rest, and nothing else in
+		# this function gets a say until the body is upright again.
+		velocity.x = move_toward(velocity.x, 0.0, 9.0 * delta)
+		velocity.z = move_toward(velocity.z, 0.0, 9.0 * delta)
+		if not is_on_floor():
+			velocity.y -= _gravity * delta
+		else:
+			velocity.y = minf(velocity.y, 0.0)
+		move_and_slide()
+		return
 	if _flinch > 0.0:
 		_flinch = maxf(0.0, _flinch - delta)
+	if _flash > 0.0:
+		_flash = maxf(0.0, _flash - delta)
+		_apply_flash()
 
 	if state == State.DOWN:
 		_down_timer -= delta
@@ -359,6 +607,7 @@ func _physics_process(delta: float) -> void:
 
 	_attack_timer = maxf(0.0, _attack_timer - delta)
 	_tick_swing(delta)
+	_tick_ranged(delta)
 
 	var to_player: Vector3 = Vector3.ZERO
 	var player_distance: float = INF
@@ -455,7 +704,61 @@ func _tick_swing(delta: float) -> void:
 		_player.call("take_enemy_blow", attack_damage, self)
 
 
+## The Ninth's thrown attack: wind up, then throw.
+##
+## The wind-up is the whole design. It fires at `bolt_interval`, it only fires when the
+## player is between `bolt_min_range` and `bolt_range` — and it warns, out loud, for six
+## tenths of a second before the bolt exists. A projectile with no tell is a tax on being in
+## the wrong place; a projectile with a tell is a question with an answer.
+func _tick_ranged(delta: float) -> void:
+	if bolt_damage <= 0.0 or is_dead():
+		return
+	if _bolt_windup_at >= 0.0:
+		_bolt_windup_at -= delta
+		if _bolt_windup_at <= 0.0:
+			_bolt_windup_at = -1.0
+			_release_bolt()
+		return
+	_bolt_timer = maxf(0.0, _bolt_timer - delta)
+	if _bolt_timer > 0.0 or not _aggro or not _may_pursue():
+		return
+	if _player == null or not is_instance_valid(_player):
+		return
+	var distance: float = Vector2(
+		_player.global_position.x - global_position.x,
+		_player.global_position.z - global_position.z
+	).length()
+	if distance < bolt_min_range or distance > bolt_range:
+		return
+	_bolt_timer = bolt_interval
+	_bolt_windup_at = bolt_windup
+	_play("Attack")
+	Audio.play_at("ui_toggle", global_position, -6.0, 0.7)
+
+
+func _release_bolt() -> void:
+	if _player == null or not is_instance_valid(_player):
+		return
+	var to_player: Vector3 = _player.global_position + Vector3(0.0, 0.9, 0.0) - global_position
+	QiBolt.spawn(
+		get_parent(),
+		global_position + Vector3(0.0, target_height * scale_factor * 0.7, 0.0),
+		to_player,
+		bolt_damage,
+		bolt_speed,
+		rune_color,
+		self
+	)
+	Audio.play_at("whoosh", global_position, -4.0, 0.7)
+
+
 func _restock() -> void:
+	_stagger = 0.0
+	# A champion never does. `respawn_seconds` is set to infinity on the kill and read back
+	# here as well, because the timer that reaches zero is the one path a boss could come
+	# back through.
+	if is_champion():
+		return
 	hp = max_hp
 	state = State.GUARD
 	_aggro = false

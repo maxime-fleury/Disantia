@@ -145,9 +145,20 @@ func _run() -> void:
 	await _test_safe_zone()
 	await _test_enemies()
 	await _test_quests()
+	_test_shop()
+	await _test_wards()
+	await _test_ward_walls()
+	await _test_champions()
+	await _test_ranged_bolt()
+	await _test_damage_numbers()
+	await _test_landmarks()
+	await _test_wayfaring()
+	await _test_rim()
 	await _test_abilities()
 	await _test_regen()
+	await _test_attainments()
 	await _test_qi_pressure()
+	await _test_qi_arts()
 	await _test_ceilings()
 	await _test_step_up()
 	await _test_slopes()
@@ -163,6 +174,10 @@ func _run() -> void:
 	await _test_hud_intro()
 	await _test_hud_layout()
 	await _test_hud_progress()
+	# Before the save round trip rather than early in the run: this section changes the world
+	# itself — a camp's raiders are spared and another camp is burned — and every test that
+	# counts raiders has already had its say by here.
+	await _test_people()
 	_test_persistence()
 	_restore_player_state()
 
@@ -191,8 +206,19 @@ func _reset_state() -> void:
 	PlayerData.has_saved_position = false
 	PlayerData.crystals = 0
 	PlayerData.abilities = PlayerData.DEFAULT_ABILITIES.duplicate(true)
+	# Decisions are the one thing a real player's save would carry that the suite cannot work
+	# around: a body that has already chosen a path is a body with no choices left to be about.
+	PlayerData.decisions.clear()
 	Cultivation.reset()
 	Quests.reset()
+	Wards.reset()
+	# ...and every ward is opened for the rest of the run.
+	#
+	# The suite warps the body all over the map — to the farthest spirit zone, to far ground,
+	# onto hillsides — and a ward doing its job would quietly shove it back out of half of
+	# those measurements, which is a failure that would look like a physics bug. The walls get
+	# their own section, where they are shut on purpose and the realm is set to open them.
+	Wards.set("_passed", Wards.gate_count())
 
 
 ## Puts the body back on the spawn point before anything is measured.
@@ -885,6 +911,446 @@ func _test_hud_progress() -> void:
 	_check(panel != null and _near(panel.scale.x, original, 0.001), "and back again")
 
 
+# ------------------------------------------------------------------- the spine
+
+## The wards: the table itself, and the agreement between it and everything else that has
+## an opinion about the shape of the world.
+##
+## Read rather than copied, in every case. A check that hard-codes "66 metres" would pass
+## on the day it was written and go on passing after the map doubled, which is exactly the
+## failure the fractions exist to prevent.
+func _test_wards() -> void:
+	_section("Wards")
+	_check(Wards.gate_count() >= 2, "the road out has wards across it",
+		"%d gates" % Wards.gate_count())
+	var extent: float = float(_terrain.call("extent"))
+	var last: float = 0.0
+	for i in Wards.gate_count():
+		var gate: Dictionary = Wards.GATES[i]
+		var radius: float = Wards.radius_of(i)
+		_check(radius > last + 20.0,
+			"%s stands further out than the ward before it" % String(gate["name"]),
+			"%.0f m" % radius)
+		_check(radius < extent * 0.96, "%s stands inside the world" % String(gate["name"]),
+			"%.0f m of %.0f m" % [radius, extent])
+		_check(int(gate["required_realm"]) <= Wards.GATES.size(),
+			"%s wants a realm that exists" % String(gate["name"]),
+			"%s" % Wards.realm_label_of(i))
+		var warden: Dictionary = gate["warden"]
+		_check(String(warden["id"]) != "" and String(warden["label"]) != "",
+			"%s has a champion with a name" % String(gate["name"]))
+		last = radius
+
+	# Ring r is powered by zone r. This is the loop: the boost that makes a realm cheap is
+	# always on the far side of the wall that realm opens, and the two lists are written in
+	# two different files, so the check is that they still describe the same world.
+	var zones_node: Node = get_tree().root.get_node_or_null("Main/QiZones")
+	if zones_node != null:
+		var defs: Array = zones_node.get("ZONE_DEFS")
+		_check(defs.size() == Wards.RING_ZONES.size(), "there is one spirit zone per ring",
+			"%d zones, %d rings" % [defs.size(), Wards.RING_ZONES.size()])
+		for i in mini(defs.size(), Wards.RING_ZONES.size()):
+			_check(String(defs[i]["id"]) == String(Wards.RING_ZONES[i]),
+				"ring %d is powered by %s" % [i, defs[i]["name"]])
+		var placed: Array = zones_node.call("zones")
+		for zone: Dictionary in placed:
+			var ring: int = int(zone.get("ring", -1))
+			var from_home: float = Vector2(
+				zone["position"].x, zone["position"].z).length()
+			# A zone in the wrong ring would be a boost you can farm from inside a wall —
+			# or one you cannot reach at all — and neither is visible in a placement log.
+			var inner: float = 0.0 if ring <= 0 else Wards.radius_of(ring - 1)
+			_check(ring >= 0 and from_home >= inner,
+				"%s is on the far side of the ward that opens its ring" % zone["name"],
+				"%.0f m, ring %d opens at %.0f m" % [from_home, ring, inner])
+
+	# The things to find, one ring at a time. Two of them have to be inside the first ward:
+	# the elder asks for two of the old places several minutes before any realm can open a
+	# wall, and a task chain that stalls behind a wall is a wall with a bug report on it.
+	var sites_node: Node = get_tree().root.get_node_or_null("Main/Landmarks")
+	if sites_node != null and sites_node.has_method("sites_in_ring"):
+		for ring in Wards.RING_ZONES.size():
+			var in_ring: int = (sites_node.call("sites_in_ring", ring) as Array).size()
+			_check(in_ring >= 1, "ring %d has places to find in it" % ring,
+				"%d sites" % in_ring)
+		var first: int = (sites_node.call("sites_in_ring", 0) as Array).size()
+		_check(first >= 2, "and the ring you start in has enough for the elder's errand",
+			"%d sites inside the first ward" % first)
+
+	# The goal line: one thing at a time, a ratio the HUD can draw, and words that name what
+	# the player has to do rather than what the system is called.
+	var goal: Dictionary = Wards.goal()
+	_check(not String(goal.get("title", "")).is_empty(), "the path always names one next thing")
+	_check(float(goal["progress"]) >= 0.0 and float(goal["progress"]) <= 1.0,
+		"the path meter is a ratio like every other bar", "%.2f" % float(goal["progress"]))
+	_check(String(goal.get("chapter", "")) != "",
+		"and says which ring it is talking about", String(goal["chapter"]))
+	_check(String(goal.get("detail", "")) != "",
+		"with a longer answer in the tooltip", String(goal["detail"]))
+	if _hud != null:
+		_hud.call("_refresh_path")
+		var path_name: Label = _find_by_name(_hud, "PathName") as Label
+		var chapter: Label = _find_by_name(_hud, "PathChapter") as Label
+		var bar: ProgressBar = _find_by_name(_hud, "PathBar") as ProgressBar
+		_check(path_name != null and not path_name.text.is_empty(),
+			"the HUD carries the next thing on the path")
+		_check(chapter != null and chapter.text.begins_with("THE PATH"),
+			"and names the ring it belongs to", chapter.text if chapter != null else "missing")
+		_check(bar != null and _near(bar.max_value, 1.0, 0.001),
+			"with a meter on the same 0..1 scale as the rest of them")
+
+
+## The walls themselves: that a ward the realm has not opened actually stops a body, and
+## that the same ward stops stopping once it has.
+##
+## The body is warped rather than walked, because the claim is about the boundary rather than
+## about the legs: a test that ran into the wall would also be testing the slope of the
+## ground it ran over.
+func _test_ward_walls() -> void:
+	_section("Ward walls")
+	var walls: Node3D = get_tree().root.get_node_or_null("Main/WardWalls") as Node3D
+	_check(walls != null, "the wards are built in the world")
+	if walls == null or _player == null or _terrain == null:
+		return
+	var keep: Dictionary = Wards.save_data()
+	var tier_keep: int = Cultivation.tier
+
+	# A fresh cultivator, standing inside the first wall.
+	Wards.set("_passed", 0)
+	Cultivation.tier = 0
+	Wards.changed.emit()
+	await _settle(2)
+	var radius: float = Wards.radius_of(0)
+	_check(bool(walls.call("wall_visible", 0)), "a ward you have not earned is standing")
+	_check(not Wards.is_open(0), "and the rule agrees that it is shut", Wards.blocker(0))
+	var before: int = int(walls.call("blocked_count"))
+	(_player as Node3D).call("warp_to", _ground_spot(radius + 8.0))
+	await _settle(6)
+	var reached: float = Vector2(_player.global_position.x, _player.global_position.z).length()
+	_check(reached < radius, "a shut ward turns the body back",
+		"%.0f m out against a wall at %.0f m" % [reached, radius])
+	_check(int(walls.call("blocked_count")) > before, "and it is the wall that did it")
+	_check(Wards.passed() == 0, "and nothing was recorded as crossed")
+
+	# The same wall, with the realm it wants.
+	Cultivation.tier = int(Wards.GATES[0]["required_realm"]) * Cultivation.STAGES_PER_REALM
+	await _settle(2)
+	_check(Wards.is_open(0), "the realm the ward asks for opens it",
+		"%s" % Wards.realm_label_of(0))
+	(_player as Node3D).call("warp_to", _ground_spot(radius + 8.0))
+	await _settle(6)
+	_check(Wards.passed() >= 1, "walking out through an open ward crosses it",
+		"%d crossed" % Wards.passed())
+	_check(not bool(walls.call("wall_visible", 0)), "and the fence is gone")
+
+	# ...and a save dropped outside a wall it has not opened is put back inside, because a
+	# body on the wrong side of a closed ward is a world state nothing else can repair.
+	Wards.set("_passed", 0)
+	Cultivation.tier = 0
+	Wards.changed.emit()
+	(_player as Node3D).call("warp_to", _ground_spot(radius + 8.0))
+	await _settle(4)
+	walls.call("_reconcile")
+	await _settle(2)
+	var inside: float = Vector2(_player.global_position.x, _player.global_position.z).length()
+	_check(inside < radius, "a body left on the wrong side of a shut ward is put back",
+		"%.0f m" % inside)
+
+	Wards.set("_passed", int(keep["passed"]))
+	Wards.set("_wardens_down", (keep["wardens"] as Array).duplicate())
+	Cultivation.tier = tier_keep
+	Wards.changed.emit()
+	await _settle(2)
+
+
+## A ground spot at a given radius from the fire, on the terrain rather than above it.
+func _ground_spot(radius: float) -> Vector3:
+	var height: float = float(_terrain.call("surface_height_at", radius, 0.0))
+	return Vector3(radius, height + 2.0, 0.0)
+
+
+## The champions: that they exist where the table says, that they are a fight rather than a
+## formality, and that beating one is permanent and pays.
+func _test_champions() -> void:
+	_section("Champions")
+	var camps: Node = get_tree().root.get_node_or_null("Main/EnemyCamps")
+	if camps == null:
+		_check(false, "the camps are part of the world")
+		return
+	var standing: Array = camps.call("champions")
+	var expected: int = 0
+	for gate: Dictionary in Wards.GATES:
+		if not Wards.warden_down(String((gate["warden"] as Dictionary)["id"])):
+			expected += 1
+	# Asked of the world rather than of the table, because the world was built *from the
+	# player's save* and the suite resets that save a few frames later. A body who felled a
+	# champion in an earlier session arrives to a map with one camp fewer, which is the design
+	# — the ring they took stays taken — and a check that counted the table alone would call
+	# that a bug every time somebody actually played the game between two runs.
+	var left_out: Array = camps.call("warden_left_out")
+	_check(standing.size() + left_out.size() == Wards.GATES.size(),
+		"every warden is either standing over its zone or was felled in an earlier session",
+		"%d standing, %d already felled of %d"
+			% [standing.size(), left_out.size(), Wards.GATES.size()])
+	for gate: Dictionary in Wards.GATES:
+		var gate_id: String = String((gate["warden"] as Dictionary)["id"])
+		if not Wards.warden_down(gate_id):
+			continue
+		var rebuilt: bool = false
+		for champion: Node in standing:
+			if String(champion.get("warden_id")) == gate_id:
+				rebuilt = true
+		_check(not rebuilt, "%s is down and has not been rebuilt" % gate_id,
+			"a felled champion that comes back makes the ring a treadmill")
+	if standing.is_empty():
+		print("  info  every champion in this save is already down; the kill is not re-run")
+		return
+
+	# Each one stands on the zone of the ring it holds — the whole reason it exists.
+	var zones_node: Node = get_tree().root.get_node_or_null("Main/QiZones")
+	if zones_node != null:
+		var placed: Array = zones_node.call("zones")
+		for champion: Node3D in standing:
+			var ring: int = int(champion.call("warden_id_ring"))
+			var zone: Dictionary = {}
+			for candidate: Dictionary in placed:
+				if int(candidate.get("ring", -1)) == ring:
+					zone = candidate
+					break
+			if zone.is_empty():
+				continue
+			var gap: float = Vector2(
+				champion.global_position.x - zone["position"].x,
+				champion.global_position.z - zone["position"].z).length()
+			_check(gap <= 30.0, "%s stands at %s" % [champion.get("display_name"), zone["name"]],
+				"%.0f m away" % gap)
+
+	# The fight, and the payout. The body's own bookkeeping is put back afterwards: this
+	# check deliberately kills something that pays permanent caps, and every other check in
+	# the suite expects the cultivator it was handed.
+	var champion: Node3D = standing[0]
+	var stats_keep: Dictionary = PlayerData.stats.duplicate(true)
+	var crystals_keep: int = PlayerData.crystals
+	var id: String = String(champion.get("warden_id"))
+	var label: String = String(champion.get("display_name"))
+	var ring: int = int(champion.call("warden_id_ring"))
+	var hp: float = float(champion.get("max_hp"))
+	_check(hp >= 200.0 and is_finite(hp), "%s has a champion's health" % label, "%.0f" % hp)
+	_check(hp >= float(Wards.GATES[ring - 1]["warden"]["hp_floor"]),
+		"and never less than the floor it is promised")
+	_check(not Wards.zone_awake(ring), "%s is holding the zone of its ring" % label)
+	var cap_before: float = PlayerData.get_cap("attack")
+	champion.call("take_hit", hp * 4.0, _player.global_position)
+	await _settle(4)
+	_check(Wards.warden_down(id), "%s stays down" % label)
+	_check(bool(champion.call("is_dead")), "and does not get back up")
+	_check(float(champion.get("respawn_seconds")) > 1.0e9,
+		"because it has no respawn timer at all", "%.0f s" % float(champion.get("respawn_seconds")))
+	_check(Wards.zone_awake(ring), "and the ground it was standing on is awake")
+	_check(PlayerData.crystals > crystals_keep, "beating it pays crystals",
+		"%d crystals" % int(champion.get("crystals")))
+	_check(PlayerData.get_cap("attack") > cap_before,
+		"and widens a cap permanently", "ATTACK %.1f -> %.1f" % [cap_before, PlayerData.get_cap("attack")])
+	var saved: Array = Wards.save_data()["wardens"]
+	_check(saved.has(id), "and the save remembers which champion fell")
+	PlayerData.stats = stats_keep
+	PlayerData.crystals = crystals_keep
+	await _settle(2)
+
+
+## The Ninth's thrown attack: the one thing in the game that can reach a player who has
+## stepped back, and the reason the last fight is not the previous one with a bigger number.
+func _test_ranged_bolt() -> void:
+	_section("The Ninth")
+	var camps: Node = get_tree().root.get_node_or_null("Main/EnemyCamps")
+	if camps == null or _player == null:
+		return
+	var shooter: Node3D
+	for champion: Node3D in camps.call("champions"):
+		if float(champion.get("bolt_damage")) > 0.0:
+			shooter = champion
+			break
+	if shooter == null:
+		print("  info  the Ninth is already down in this save; the bolt is not re-run")
+		return
+	_check(float(shooter.get("bolt_damage")) > 0.0, "the last champion throws something")
+	_check(float(shooter.get("bolt_range")) > float(shooter.get("bolt_min_range")),
+		"and there is a band of ground where it will")
+
+	# Stand where it can reach, wake it up, and let one fly.
+	var bolt_hits: Array = []
+	if (_player as Node).has_signal("struck"):
+		(_player as Node).struck.connect(func(amount: float) -> void: bolt_hits.append(amount))
+	var hp_before: float = PlayerData.get_value("hp")
+	shooter.set("_aggro", true)
+	shooter.set("_bolt_timer", 0.0)
+	var at: Vector3 = shooter.global_position + Vector3(12.0, 0.0, 0.0)
+	at.y = float(_terrain.call("surface_height_at", at.x, at.z)) + 1.4
+	(_player as Node3D).call("warp_to", at)
+	var seen: int = 0
+	for i in 160:
+		await get_tree().physics_frame
+		seen = maxi(seen, get_tree().get_nodes_in_group("qi_bolt").size())
+		if not bolt_hits.is_empty():
+			break
+	_check(seen > 0, "it throws a bolt at a body standing twelve metres away")
+	_check(not bolt_hits.is_empty(), "and the bolt that reaches the body hurts it",
+		"%.0f raw, hp %.1f -> %.1f" % [
+			float(shooter.get("bolt_damage")), hp_before, PlayerData.get_value("hp")])
+	# Everything it left in the air is cleaned up by its own timer rather than by the world.
+	await _settle(260)
+	_check(get_tree().get_nodes_in_group("qi_bolt").size() == 0,
+		"a bolt that hits nothing stops existing")
+
+
+## The numbers that pop off a body. Cheap, and the only feedback in the game that says "am
+## I doing anything" rather than "how much is left".
+func _test_damage_numbers() -> void:
+	_section("Damage numbers")
+	var camps: Node = get_tree().root.get_node_or_null("Main/EnemyCamps")
+	if camps == null or _player == null:
+		return
+	var target: Node3D
+	for enemy: Node3D in camps.call("enemies"):
+		if not bool(enemy.call("is_dead")) and not bool(enemy.call("is_champion")):
+			target = enemy
+			break
+	if target == null:
+		print("  info  no living raider to hit; the popup is not re-run")
+		return
+	var before: int = get_tree().get_nodes_in_group("damage_popup").size()
+	var dealt: float = float(target.call("take_hit", 12.0, _player.global_position))
+	await _settle(2)
+	_check(dealt > 0.0, "a blow lands on a raider", "%.1f" % dealt)
+	_check(get_tree().get_nodes_in_group("damage_popup").size() == before + 1,
+		"and prints exactly one number")
+	# And it clears itself up, which is the only reason a node per hit is affordable.
+	await _settle(120)
+	_check(get_tree().get_nodes_in_group("damage_popup").size() == before,
+		"and the number leaves on its own")
+
+
+## Finding one of the old places: crystals, a permanent cap, and a line on the elder's chain.
+##
+## This exists because the whole tail of a site's discovery used to be dead. The boon guard
+## asked a Node for a function it does not have, the call failed, and a failed call in GDScript
+## ends the method it is in — so the cap was never granted and, two statements further down,
+## the quest counter was never reported. "Find two of the old places" was therefore impossible,
+## and everything the chain pays out after it — a second air jump, the shorter dash — was
+## unreachable. A check that only counted crystals would have passed the whole time.
+func _test_landmarks() -> void:
+	_section("Finding a place")
+	var landmarks: Node = get_tree().root.get_node_or_null("Main/Landmarks")
+	if landmarks == null or _player == null:
+		return
+	var target: Dictionary = {}
+	for site: Dictionary in landmarks.call("sites"):
+		if not bool(site.get("discovered", false)):
+			target = site
+			break
+	if target.is_empty():
+		print("  info  every site in this save is already found; the payout is not re-run")
+		return
+
+	# Put the elder's chain on the errand it names, so "did this count" has an answer.
+	var errand: int = -1
+	for i in Quests.TASKS.size():
+		if String(Quests.TASKS[i]["id"]) == "walkabout":
+			errand = i
+	if errand >= 0:
+		Quests.set("_completed", errand)
+		Quests.set("_claimed", errand)
+	var progress_before: float = Quests.progress_of(Quests.TASKS[errand]) if errand >= 0 else 0.0
+
+	var stats_keep: Dictionary = PlayerData.stats.duplicate(true)
+	var crystals_keep: int = PlayerData.crystals
+	var id: String = String(target["id"])
+	var boon: Dictionary = target["boon"]
+	var stat_id: String = String(boon.get("stat", ""))
+	var cap_before: float = PlayerData.get_cap(stat_id) if stat_id != "" else 0.0
+	var at: Vector3 = target["position"]
+	at.y = float(_terrain.call("surface_height_at", at.x, at.z)) + 1.2
+	(_player as Node3D).call("warp_to", at)
+	await _settle(8)
+	_check(PlayerData.found_landmarks.has(id), "walking into a site makes it yours", id)
+	_check(PlayerData.crystals > crystals_keep, "it pays crystals")
+	_check(stat_id != "" and PlayerData.get_cap(stat_id) > cap_before,
+		"and raises a cap, which is the half that used to be lost",
+		"%s %.1f -> %.1f" % [stat_id, cap_before, PlayerData.get_cap(stat_id)])
+	if errand >= 0:
+		_check(Quests.progress_of(Quests.TASKS[errand]) > progress_before,
+			"and the elder counts it towards his errand",
+			"%.0f -> %.0f" % [progress_before, Quests.progress_of(Quests.TASKS[errand])])
+	PlayerData.stats = stats_keep
+	PlayerData.crystals = crystals_keep
+	Quests.reset()
+	await _settle(2)
+
+
+## Wayfaring: the one destination, and the two ways it can fail.
+func _test_wayfaring() -> void:
+	_section("Wayfaring")
+	if _player == null or _terrain == null:
+		return
+	var far: Vector3 = _ground_spot(40.0)
+	(_player as Node3D).call("warp_to", far)
+	await _settle(4)
+	Input.action_release("recall")
+	await _settle(2)
+	_check(not bool((_player.call("recall_state") as Dictionary)["attuning"]),
+		"standing still with the key up is not an attunement")
+
+	Input.action_press("recall")
+	await _settle(8)
+	var state: Dictionary = _player.call("recall_state")
+	_check(bool(state["attuning"]), "holding the key starts one",
+		"%.0f%%" % (float(state["progress"]) * 100.0))
+	_check(float(state["progress"]) > 0.0 and float(state["progress"]) < 1.0,
+		"and it takes long enough to be a decision")
+	# A blow breaks it. The technique is a way to travel, not a way out of a fight — which is
+	# the only reason a teleport home can exist in a game built on being able to retreat.
+	(_player as Node).call("take_enemy_blow", 1.0, null)
+	await _settle(2)
+	var broken: Dictionary = _player.call("recall_state")
+	_check(not bool(broken["attuning"]), "a blow breaks it")
+	_check(bool(broken["blocked"]), "and it stays broken while the key is still held")
+	var distance: float = Vector2(_player.global_position.x, _player.global_position.z).length()
+	_check(distance > 30.0, "and nothing moved", "%.0f m from the fire" % distance)
+
+	# All the way through, for real — and the key has to come *up* first, which is the block
+	# doing its job rather than the test working around it.
+	Input.action_release("recall")
+	await _settle(2)
+	_check(not bool((_player.call("recall_state") as Dictionary)["blocked"]),
+		"letting go clears the interruption")
+	Input.action_press("recall")
+	var seconds: float = float(_player.get("recall_seconds"))
+	await _settle(int(ceil(seconds * 70.0)) + 20)
+	Input.action_release("recall")
+	await _settle(4)
+	var home: float = Vector2(_player.global_position.x, _player.global_position.z).length()
+	_check(home < 12.0, "held through, it puts the body back at the fire", "%.0f m" % home)
+
+
+## The rim: the terrain is a square mesh with nothing beyond it, and walking off it used to
+## end a session with no explanation at all.
+func _test_rim() -> void:
+	_section("The rim of the world")
+	if _player == null or _terrain == null:
+		return
+	var limit: float = float(_terrain.call("extent")) * 0.965
+	var at: Vector3 = _ground_spot(limit - 2.0)
+	(_player as Node3D).call("warp_to", Vector3(limit + 60.0, at.y, 0.0))
+	await _settle(8)
+	var reached: float = Vector2(_player.global_position.x, _player.global_position.z).length()
+	_check(reached <= limit + 1.0, "the edge of the world holds the body in",
+		"%.0f m out, rim at %.0f m" % [reached, limit])
+	_check(_player.global_position.y > -10.0, "and it is not falling into nothing",
+		"y %.1f" % _player.global_position.y)
+	(_player as Node3D).call("warp_to", _ground_spot(0.0) + Vector3(0.0, 4.0, 0.0))
+	await _settle(4)
+
+
 func _test_persistence() -> void:
 	_section("Persistence")
 	Cultivation.tier = 4
@@ -903,6 +1369,9 @@ func _test_persistence() -> void:
 	PlayerData.unlock_ability("dash", true)
 	PlayerData.set_ui_scale(0.72)
 	var expected_crystals: int = PlayerData.crystals
+	# And what has already been bought from the elder. A save that forgets this hands out
+	# the first rank of every ware at the starting price all over again.
+	Shop.bought = {"hide": 2, "legs": 1}
 
 	_check(PlayerData.save_game(), "save_game() writes the save file")
 
@@ -932,6 +1401,23 @@ func _test_persistence() -> void:
 		"%.2f" % PlayerData.ui_scale)
 	_check(not PlayerData.take_loaded_quests().is_empty(),
 		"the task chain is available for the Quests autoload")
+	var saved_bought: Variant = PlayerData.take_loaded_shop().get("bought", {})
+	_check(typeof(saved_bought) == TYPE_DICTIONARY
+			and int((saved_bought as Dictionary).get("hide", 0)) == 2,
+		"and the shop remembers what was bought", str(saved_bought))
+	# A decision is the one kind of state nothing can rebuild, so it is checked through a
+	# wrecked in-memory copy exactly like a cap is: a save that lost it would quietly reopen a
+	# door the player walked through, and nothing else in the game would look wrong.
+	PlayerData.note_decision("path", "breath", "")
+	PlayerData.note_decision("camp", "burn", "Bandit Hollow")
+	PlayerData.save_game()
+	PlayerData.decisions.clear()
+	_check(PlayerData.load_game(), "a save carrying decisions still loads")
+	_check(PlayerData.chosen_option("path") == "breath",
+		"and the option taken comes back", PlayerData.chosen_option("path"))
+	_check(PlayerData.decision_subject("camp") == "Bandit Hollow",
+		"with the thing it was about, which is what the world re-applies it from",
+		PlayerData.decision_subject("camp"))
 
 	# The save file is the fifth writer of a stat cap, and the one a player would actually
 	# use to get past a ceiling — including accidentally, by loading a save written before
@@ -1245,11 +1731,22 @@ func _test_qi_zones() -> void:
 			"%s needs stage %d" % [gate["name"], needed])
 		_check(is_equal_approx(Cultivation.zone_boost, 1.0),
 			"and gives nothing away while it is", "x%.1f" % Cultivation.zone_boost)
+		# The champion holding this ring is taken out of the picture for these two checks,
+		# which are about the *stage* gate: a champion on the ground makes a zone dormant
+		# whatever the cultivator's realm is, and that rule has its own section.
+		var ring: int = int(gate.get("ring", 0))
+		var warden: Dictionary = Wards.warden_of_ring(ring)
+		var held: bool = not warden.is_empty()
+		if held:
+			Wards.set("_wardens_down", [String(warden["id"])])
 		Cultivation.tier = needed
 		await _settle(4)
-		_check(not Cultivation.zone_locked, "and opens once the stage is reached")
+		_check(not Cultivation.zone_locked, "and opens once the stage is reached",
+			"held by %s" % String(warden.get("label", "nobody")))
 		_check(Cultivation.zone_boost > 1.0, "with the boost to match",
 			"x%.1f" % Cultivation.zone_boost)
+		if held:
+			Wards.set("_wardens_down", [])
 
 	# The boost has to move qi, not just a label. Measured as cultivation progress per
 	# second in the same zone, once from inside it and once from outside.
@@ -2618,6 +3115,82 @@ func _test_hud_focus() -> void:
 			"the %s control can still be clicked" % pair[0])
 
 
+## The compass at the edge of the screen.
+##
+## The check that matters is the one a decorative marker would fail: that the name it
+## shows belongs to the nearest *unfound* site, by the same flat measure the game uses. An
+## arrow that points at the second nearest, or at one already visited, is worse than no
+## arrow, because it is followed.
+func _test_wayfinder() -> void:
+	_section("Wayfinder")
+	if _hud == null or _player == null:
+		return
+	var view: Control = _hud.get("_wayfinder")
+	_check(view != null, "the HUD carries a compass")
+	if view == null:
+		return
+	var landmarks: Node = get_tree().root.get_node_or_null("Main/Landmarks")
+	if landmarks == null:
+		return
+
+	view.call("_update")
+	var expected: Dictionary = landmarks.call("nearest_unfound", _player.global_position)
+	_check(not expected.is_empty(), "there is somewhere left to find")
+	if expected.is_empty():
+		return
+	_check(bool(view.call("active")), "which the compass points at")
+	_check(String(view.call("target_name")) == String(expected["name"]),
+		"naming the nearest one not yet found",
+		"%s vs %s" % [String(view.call("target_name")), String(expected["name"])])
+	var at: Vector3 = expected["position"]
+	var flat: float = Vector2(at.x - _player.global_position.x, at.z - _player.global_position.z).length()
+	_check(_near(float(view.call("target_metres")), flat, 0.75),
+		"and the distance to it is measured flat, not over the ground",
+		"%.1f vs %.1f m" % [float(view.call("target_metres")), flat])
+	var text: String = String(view.call("text"))
+	_check(text.contains(String(expected["name"])) and text.contains(" m"),
+		"with the name and the walk printed together", text)
+
+	# The whole point of holding it in from the edge is that it never leaves the screen,
+	# including when the thing it points at is directly behind the player.
+	var point: Vector2 = view.call("marker_point")
+	var inside: bool = point.x >= 40.0 and point.x <= view.size.x - 40.0 \
+		and point.y >= 40.0 and point.y <= view.size.y - 40.0
+	_check(inside, "the mark is held inside the screen", str(point) + " of " + str(view.size))
+
+	# Every site found: the marker has nothing left to say and says nothing.
+	var sites: Array = landmarks.call("sites")
+	var was: Array = []
+	for site: Dictionary in sites:
+		was.append(bool(site.get("discovered", false)))
+		site["discovered"] = true
+	view.call("_update")
+	_check(not bool(view.call("active")),
+		"with every site found the compass stops pointing, rather than looping")
+	for i in sites.size():
+		sites[i]["discovered"] = was[i]
+	view.call("_update")
+	_check(bool(view.call("active")), "and it comes back for the sites still out there")
+
+	# Off the screen while a panel is open: the marker is drawn over the dim, and a
+	# world-space readout floating above a menu is not part of the menu.
+	_hud.call("open_settings")
+	view.call("_update")
+	_check(not bool(view.call("active")), "and it is off while the settings are open")
+	_hud.call("close_settings")
+	view.call("_update")
+	_check(bool(view.call("active")), "and back once they close")
+
+
+## How far the least well-placed site sits from the nearest road, for the check's detail
+## line. Reads the sites' own recorded distance rather than re-measuring it here.
+func _furthest_site(landmarks: Node) -> float:
+	var worst: float = 0.0
+	for site: Dictionary in landmarks.call("sites"):
+		worst = maxf(worst, float(site.get("road_distance", 0.0)))
+	return worst
+
+
 ## The map is only worth having if its coordinates are right: a marker drawn a few
 ## pixels off reads as a destination that is not there, which is worse than no map.
 ## So the projection and the legend are measured; the picture is not.
@@ -2712,6 +3285,52 @@ func _test_map() -> void:
 		_check(waiting == claimable_now,
 			"the elder's mark moves exactly when a reward is waiting",
 			"map=%s chain=%s" % [waiting, claimable_now])
+
+	# The sites out in the world, on the map: the found ones marked, the rest left off.
+	# Drawing all nine would turn "go and look over that hill" into "walk to this
+	# coordinate", and the count in the legend is the honest half of that information
+	# anyway — it says there is more out there without saying where.
+	var landmarks: Node = get_tree().root.get_node_or_null("Main/Landmarks")
+	_check(landmarks != null, "the world has sites to find")
+	if landmarks != null:
+		var sites: Array = landmarks.call("sites")
+		_check(sites.size() >= 6, "several of them", "%d sites" % sites.size())
+		var on_roads: bool = true
+		var named: bool = true
+		var seen: Dictionary = {}
+		for site: Dictionary in sites:
+			if String(site["name"]).is_empty():
+				named = false
+			if seen.has(String(site["name"])):
+				named = false
+			seen[String(site["name"])] = true
+			if float(site.get("road_distance", 0.0)) > 24.0:
+				on_roads = false
+		_check(named, "each with its own name")
+		_check(on_roads, "all of them beside a road, so following a road is how you find them",
+			"furthest %.1f m from a road" % _furthest_site(landmarks))
+		var marked: int = 0
+		for site: Dictionary in sites:
+			if bool(site.get("discovered", false)):
+				marked += 1
+		var counts: Vector2i = view.call("landmark_counts")
+		_check(counts.y == sites.size() and counts.x == marked,
+			"the map counts what is found and what exists", str(counts))
+		# Marking is read out of the sites themselves, so the map cannot claim a site is
+		# found while the world still has its beacon lit for it.
+		var lit_beacons: int = 0
+		for site: Dictionary in sites:
+			var beacon: Node3D = site.get("beacon")
+			if beacon != null and beacon.visible:
+				lit_beacons += 1
+		_check(lit_beacons == sites.size() - marked,
+			"a beacon burns for every site that is not on the map yet",
+			"%d lit, %d found" % [lit_beacons, marked])
+		_check(String(_hud.call("map_legend_text")).contains("Site you found")
+			or String(_hud.call("map_legend_text")).contains("site"),
+			"and the legend explains the mark", String(_hud.call("map_legend_text")))
+
+	_test_wayfinder()
 
 	_check(bool(_hud.call("map_expanded")), "the map starts open")
 	toggle.pressed.emit()
@@ -2840,6 +3459,20 @@ func _test_enemies() -> void:
 	_check(raiders.size() >= 3, "and staffed", "%d raiders" % raiders.size())
 	if raiders.is_empty():
 		return
+	# Every guard's leash is measured from its *own* fire, in world space. The enemies are
+	# children of their camp, so a camp's placement and a raider's local offset are two
+	# different vectors that look like the same one — handing both the same value puts each
+	# guard one camp-width from the ground it is supposed to be guarding, leashed to a home
+	# that is nowhere near it. Nothing else about the camp looks wrong when that happens.
+	for raider: Node3D in raiders:
+		var leash: Vector3 = raider.call("leash_origin")
+		var nearest: float = INF
+		for camp: Dictionary in camps:
+			var centre: Vector3 = camp["position"]
+			nearest = minf(nearest, Vector2(leash.x - centre.x, leash.z - centre.z).length())
+		_check(nearest <= 8.0, "%s is leashed to its own fire" % raider.name,
+			"%.1f m from the nearest camp" % nearest)
+
 	var zone: Node = get_tree().get_first_node_in_group("safe_zone")
 	var bot: CharacterBody3D = raiders[0]
 	var home: Vector3 = bot.call("leash_origin")
@@ -3014,6 +3647,405 @@ func _test_quests() -> void:
 		"the chain has more than one thing in it")
 
 
+## The people, and the two things they let you decide.
+##
+## Two claims are worth more than the rest here and both are checked by walking up to
+## somebody and pressing the key. The first is that the *input* path works at all — a dialogue
+## nothing can open is a table of strings. The second is that a choice outlives the launch it
+## was made in: the world is rebuilt from scratch every time the game starts, so a camp that
+## was burned only stays burned if the world is told about the decision again as it builds.
+func _test_people() -> void:
+	_section("The people")
+	var people: Node = get_tree().root.get_node_or_null("Main/People")
+	var camps: Node = get_tree().root.get_node_or_null("Main/EnemyCamps")
+	_check(people != null, "the cast is part of the world")
+	if people == null or _player == null or _terrain == null:
+		return
+	var villagers: Array = people.call("villagers")
+	_check(villagers.size() == Story.cast().size(),
+		"and holds exactly the people the story knows about",
+		"%d in the world against %d in the table" % [villagers.size(), Story.cast().size()])
+	_check(villagers.size() >= 3, "which is more than the one we had",
+		"%d people" % villagers.size())
+	_check(get_tree().get_nodes_in_group("quest_npc").size() == 1,
+		"and the elder is still the only one handing out tasks",
+		"%d in the group" % get_tree().get_nodes_in_group("quest_npc").size())
+	for node: Node in villagers:
+		var villager := node as Node3D
+		_check(villager != null and String(villager.get("person_id")) != "",
+			"a person in the world with an id: %s" % String(node.name))
+		var plate := villager.get_node_or_null("NamePlate") as Label3D
+		_check(plate != null and plate.text != "",
+			"%s has a name over their head" % String(villager.get("npc_name")),
+			plate.text if plate != null else "no plate")
+
+	# Liveliness, measured rather than asserted: somebody walks a road, and a figure that
+	# slides sideways along it reads as a prop on a rail rather than as a person.
+	var walkers: Array = []
+	for node: Node in villagers:
+		if bool(node.call("is_on_road")):
+			walkers.append(node)
+	_check(walkers.size() >= 1, "somebody is walking one of the roads",
+		"%d walkers" % walkers.size())
+	if not walkers.is_empty():
+		var walker := walkers[0] as Node3D
+		var from: Vector3 = walker.global_position
+		await _settle(320)
+		var moved: float = Vector2(
+			walker.global_position.x - from.x, walker.global_position.z - from.z
+		).length()
+		_check(moved > 0.4, "and is somewhere else a few seconds later", "%.2f m" % moved)
+		var ground: float = float(_terrain.call(
+			"surface_height_at", walker.global_position.x, walker.global_position.z
+		))
+		_check(absf(walker.global_position.y - ground) < 0.4,
+			"with their feet still on the ground",
+			"%.2f m off it" % (walker.global_position.y - ground))
+
+	var ren: Node3D
+	for node: Node in villagers:
+		if String(node.get("person_id")) == "ren":
+			ren = node as Node3D
+	_check(ren != null, "Master Ren is standing in the camp")
+	if ren == null:
+		return
+	_player.call("warp_to", ren.global_position + Vector3(1.5, 0.6, 0.0))
+	await _land(_player)
+	await _settle(3)
+	_check(bool(ren.call("in_range")), "close enough to talk to")
+	# The real key, not the action: the people read `is_action_pressed` off an *event*, and
+	# `Input.action_press` only moves the polled state — a synthetic hold is invisible to them.
+	_press_key(KEY_E)
+	await _settle(3)
+	_check(Story.talking(), "the talk key opens a conversation")
+	_check(bool(_hud.call("dialogue_open")), "and the band is on screen")
+	_check(Story.conversation().get("speaker", "") == "Master Ren",
+		"and it says who is talking", String(Story.conversation().get("speaker", "")))
+	_check(Story.options().size() == 2, "with two answers on the table",
+		"%d" % Story.options().size())
+
+	# A conversation is not something you can walk out of the middle of.
+	var standing: Vector3 = _player.global_position
+	await _hold_action("move_forward", 14)
+	_check(_player.global_position.distance_to(standing) < 0.25,
+		"and the body cannot walk away mid-sentence",
+		"%.2f m" % _player.global_position.distance_to(standing))
+
+	# Answered on the *key*, because the number keys are bound to the drills as well — the
+	# thing that has to be true is that the conversation reads them first.
+	var attack_before: float = PlayerData.get_cap("attack")
+	_press_key(KEY_1)
+	await _settle(3)
+	_check(PlayerData.chosen_option("path") == "fist", "key 1 answers the question",
+		PlayerData.chosen_option("path"))
+	_check(PlayerData.get_cap("attack") >= attack_before + 7.0,
+		"and the heavier hand is permanent, not a number in a dialogue",
+		"%.1f -> %.1f" % [attack_before, PlayerData.get_cap("attack")])
+	_check(not Training.is_training(), "and answering did not also start a drill")
+	_check(String(Story.conversation().get("line", "")).contains("that is what you are"),
+		"the person replies before the band closes",
+		String(Story.conversation().get("line", "")))
+	Story.close()
+	await _settle(3)
+	_check(not bool(_hud.call("dialogue_open")), "and then the band goes away")
+	Story.begin("ren")
+	_check(Story.options().is_empty(),
+		"a decision already made cannot be made again")
+	_check(String(Story.conversation().get("line", "")).contains("already chose"),
+		"and the person says so rather than forgetting",
+		String(Story.conversation().get("line", "")))
+	Story.close()
+
+	# The people see what you have become, which is the whole of what makes a crowd feel like
+	# a crowd rather than a row of menus.
+	# The greeting follows the number, which is the whole of what makes a crowd feel like a
+	# crowd rather than a row of menus. Grown by hand here rather than trained, because the
+	# suite has already been through every ring and the *table* is what is being checked.
+	var seen_as: String = Story.greeting_for("ren")
+	var tier_before: int = Story.renown_tier()
+	PlayerData.grant_cap("qi", 3000.0)
+	_check(Story.renown_tier() > tier_before, "growing moves the body up the scale of renown",
+		"tier %d -> %d" % [tier_before, Story.renown_tier()])
+	_check(Story.greeting_for("ren") != seen_as,
+		"and somebody who has grown is greeted differently",
+		"%s -> %s" % [seen_as, Story.greeting_for("ren")])
+	var tier_line: String = String(Story.RENOWN[Story.renown_tier()]["greeting"])
+	_check(Story.greeting_for("ren").contains(tier_line),
+		"by the line that belongs to the tier they are in",
+		"%s: %s" % [Story.renown_label(), tier_line])
+	_check(String(Story.RENOWN[0]["greeting"]) != String(Story.RENOWN[-1]["greeting"]),
+		"and the first thing anybody says to you is not the last")
+	PlayerData.stats["qi"]["cap"] = 50.0
+	PlayerData.stats_changed.emit()
+
+	# Xia will not raise the raiders with you until your hands have learned something — the
+	# gate is on a technique attained rather than on a level, because a door nobody can read
+	# is a door with no handle.
+	Story.begin("xia")
+	_check(Story.options().is_empty(), "Xia holds the camp question back from a fresh body")
+	Story.close()
+	PlayerData.grant_cap("body", 5.0)
+	_check(PlayerData.attained_count() >= 1, "one technique is enough to have earned an opinion",
+		"%d held" % PlayerData.attained_count())
+	Story.begin("xia")
+	_check(Story.options().size() == 2, "and then she asks it", "%d answers" % Story.options().size())
+	var defense_before: float = PlayerData.get_cap("defense")
+	Story.choose("spare")
+	_check(PlayerData.chosen_option("camp") == "spare", "sparing them is recorded")
+	_check(PlayerData.decision_subject("camp") != "",
+		"against the camp it was about", PlayerData.decision_subject("camp"))
+	_check(PlayerData.get_cap("defense") > defense_before + 5.0,
+		"and a camp that is spared is a debt the body carries",
+		"DEFENSE %.1f -> %.1f" % [defense_before, PlayerData.get_cap("defense")])
+	Story.close()
+	var spared: String = PlayerData.decision_subject("camp")
+	if camps != null:
+		var spared_camp: Dictionary = {}
+		var control_camp: Dictionary = {}
+		for camp: Dictionary in camps.call("camps"):
+			if String(camp["name"]) == spared:
+				spared_camp = camp
+			elif control_camp.is_empty():
+				control_camp = camp
+		var spared_raiders: Array = _raiders_of(spared_camp)
+		var control_raiders: Array = _raiders_of(control_camp)
+		_check(not spared_raiders.is_empty() and not control_raiders.is_empty(),
+			"both the spared camp and an ordinary one are still staffed",
+			"%d and %d" % [spared_raiders.size(), control_raiders.size()])
+		var spared_pacified: int = 0
+		for body: Node3D in spared_raiders:
+			if bool(body.call("is_pacified")):
+				spared_pacified += 1
+		var control_pacified: int = 0
+		for body: Node3D in control_raiders:
+			if bool(body.call("is_pacified")):
+				control_pacified += 1
+		_check(spared_pacified == spared_raiders.size() and control_pacified == 0,
+			"the sparing reached that camp's raiders and no others",
+			"%d of %d spared, %d of %d at the next fire"
+				% [spared_pacified, spared_raiders.size(), control_pacified, control_raiders.size()])
+		# The control is the point of the pair. A raider answers "no" for half a dozen reasons
+		# that have nothing to do with being spared — the wards, the leash, a beaten body — and
+		# the first version of this check stood inside the camp wards, where *every* raider in
+		# the world says no: it passed with the sparing ripped out of the game.
+		PlayerData.restore_all()
+		if bool((_player as Node3D).call("is_downed")):
+			await _await_upright()
+		# A guard standing at its own fire, and no other kind will do. The suite has spent the
+		# last several sections dragging raiders around the map, and one that is still chasing
+		# somewhere is either past its leash (which answers no for a reason of its own) or
+		# standing back inside the camp wards where nobody may pursue anything.
+		var control_guard := _living_raider(control_raiders)
+		var spared_guard := _living_raider(spared_raiders)
+		_check(control_guard != null and spared_guard != null,
+			"and there is a raider on its feet at each fire")
+		if control_guard != null and spared_guard != null:
+			var control_hunts: bool = await _would_hunt(control_guard)
+			_check(control_hunts,
+				"a raider at an ordinary fire would come after a body standing beside it")
+			var spared_hunts: bool = await _would_hunt(spared_guard)
+			_check(not spared_hunts,
+				"and the spared one will not, however close you stand")
+
+	# The third conversation, which is about the price of everything else.
+	var price_before: int = Shop.price("hide")
+	Story.begin("bo")
+	_check(Story.options().size() == 2, "Old Bo has the elder's ledger and two ways with it",
+		"%d answers" % Story.options().size())
+	Story.choose("return")
+	Story.close()
+	_check(PlayerData.chosen_option("ledger") == "return", "walking it back is recorded")
+	var price_after: int = Shop.price("hide")
+	_check(price_after < price_before, "and the shelf speaks for itself afterwards",
+		"%d crystals -> %d" % [price_before, price_after])
+	_check(_near(float(price_after) / float(price_before), 0.88, 0.05),
+		"by the twelve per cent the ledger was worth")
+	_check(_near(float(Shop.save_data().get("discount", 1.0)), 0.88, 0.001),
+		"which is a price that has to survive the session, so it is saved")
+	Shop.set_discount(1.0)
+
+	# And the other half of the same decision: a burned camp has to still be burned after a
+	# relaunch, which is the part that needs the save rather than the conversation.
+	if camps != null:
+		var target: Dictionary = {}
+		for camp: Dictionary in camps.call("camps"):
+			if String(camp["name"]) != PlayerData.decision_subject("camp"):
+				target = camp
+				break
+		_check(not target.is_empty(), "a second camp to burn")
+		if not target.is_empty():
+			var standing_before: int = int(camps.call("living_raiders"))
+			PlayerData.note_decision("camp", "burn", String(target["name"]))
+			camps.call("_apply_decisions")
+			var standing_after: int = int(camps.call("living_raiders"))
+			_check(standing_after < standing_before,
+				"a camp burned in an earlier session is still burned when the world is rebuilt",
+				"%d raiders -> %d" % [standing_before, standing_after])
+			# Put the spare back: it is the state the rest of the run was built in.
+			PlayerData.decisions.clear()
+			PlayerData.note_decision("camp", "spare", spared)
+
+	PlayerData.decisions.clear()
+	PlayerData.stats["attack"]["cap"] = PlayerData.def("attack")["base_cap"]
+	PlayerData.stats["body"]["cap"] = PlayerData.def("body")["base_cap"]
+	PlayerData.stats_changed.emit()
+
+
+## How many of a camp's raiders would come after a body standing on their fire.
+##
+## Asked with the player *in* the camp, because the question only has an answer there: from
+## the safe zone, or from beyond the leash, every raider in the world reports no and the check
+## would pass whatever the game did.
+func _raiders_of(camp: Dictionary) -> Array:
+	var out: Array = []
+	var root := camp.get("node") as Node3D
+	if root == null:
+		return out
+	# The camp's own children, which is exactly the camp's guard: every raider is added to its
+	# camp's root when it is placed, and a champion is added the same way and filtered out here.
+	for child in root.get_children():
+		var body := child as Node3D
+		if body == null or not body.has_method("leash_origin"):
+			continue
+		if body.has_method("is_champion") and bool(body.call("is_champion")):
+			continue
+		out.append(body)
+	return out
+
+
+## The first raider of a camp still on its feet, or null.
+func _living_raider(bodies: Array) -> Node3D:
+	for body: Node3D in bodies:
+		if not bool(body.call("is_dead")):
+			return body
+	return null
+
+
+## Stands the player beside one raider and asks *that* raider whether it would come after them.
+##
+## One raider, one moment. The rule being measured — `_may_pursue` — is decided by the leash,
+## the camp wards, the aggro radius and whether the player is on their feet, and every one of
+## those is a fact about *now*. A loop that walked a body past five guards in a row measured a
+## chase instead: each guard followed the player to the next one's fire and answered from fifty
+## metres past its own leash, which reads exactly like "the sparing did not work".
+func _would_hunt(body: Node3D) -> bool:
+	# Stood back at its own fire first. The suite has spent several sections dragging raiders
+	# around the map, and a guard answering from fifty metres past its leash is answering a
+	# different question than the one being asked — as is one standing inside the camp wards,
+	# which is where a chase that started somewhere else often ends up.
+	body.global_position = body.call("leash_origin")
+	body.velocity = Vector3.ZERO
+	PlayerData.restore_all()
+	(_player as Node3D).call("warp_to", body.global_position + Vector3(1.6, 1.0, 0.0))
+	await _land(_player)
+	await _settle(2)
+	return bool(body.call("_may_pursue"))
+
+
+## The shelf, and the one thing it has to do that nothing else does: take crystals away.
+##
+## Every check here is against the stat table afterwards rather than against the return
+## value, because the failure that matters is a ware that reports a purchase and grants
+## nothing — or, the mirror of it, one that grants twice for one payment.
+func _test_shop() -> void:
+	_section("The elder's shelf")
+	if _hud == null:
+		return
+	var stats_before: Dictionary = PlayerData.stats.duplicate(true)
+	var crystals_before: int = PlayerData.crystals
+	var abilities_before: Dictionary = PlayerData.abilities.duplicate(true)
+	var bought_before: Dictionary = Shop.bought.duplicate()
+
+	var priced: bool = true
+	var described: bool = true
+	for ware: Dictionary in Shop.WARES:
+		if Shop.price(String(ware["id"])) <= 0:
+			priced = false
+		if String(ware["name"]).is_empty() or String(ware["detail"]).is_empty():
+			described = false
+	_check(Shop.WARES.size() >= 4, "there is something on the shelf",
+		"%d wares" % Shop.WARES.size())
+	_check(priced, "every ware has a price")
+	_check(described, "and a name and a description")
+
+	# Broke.
+	Shop.reset()
+	PlayerData.crystals = 0
+	_check(not Shop.can_buy("hide"), "an empty purse buys nothing")
+	_check(not Shop.buy("hide"), "and the sale is refused")
+	_check(Shop.count("hide") == 0, "without being counted as a purchase")
+
+	# Afforded, at exactly the price.
+	var price: int = Shop.price("hide")
+	PlayerData.crystals = price
+	var hp_before: float = PlayerData.get_cap("hp")
+	_check(Shop.can_buy("hide"), "the exact price is enough", "%d crystals" % price)
+	_check(Shop.buy("hide"), "and the sale goes through")
+	_check(PlayerData.crystals == 0, "the purse is debited once, not twice",
+		"left with %d" % PlayerData.crystals)
+	var granted: float = PlayerData.get_cap("hp") - hp_before
+	_check(_near(granted, float(Shop.def("hide")["amount"]), 0.001),
+		"and the cap actually rose by what the label promised", "+%.2f HP" % granted)
+
+	# The price curve is the pacing: a ware that never gets more expensive is a ware the
+	# player stops thinking about.
+	var first_price: int = Shop.price("hide")
+	PlayerData.crystals = 9999
+	Shop.buy("hide")
+	_check(Shop.price("hide") > first_price, "the second one costs more",
+		"%d then %d" % [first_price, Shop.price("hide")])
+
+	# A ware bounded at the top: the game must not sell a fifth air jump.
+	PlayerData.unlock_ability("air_jumps", 4)
+	_check(not Shop.available("airstep"), "a ware at its ceiling leaves the shelf",
+		"%d air jumps" % PlayerData.air_jumps())
+	_check(not Shop.buy("airstep"), "and cannot be bought")
+
+	# And the one bounded at the bottom, which counts the other way.
+	PlayerData.unlock_ability("dash_cooldown", float(Shop.def("step")["floor"]))
+	_check(not Shop.available("step"), "so does one that has hit its floor",
+		"%.2f s" % PlayerData.dash_cooldown())
+
+	# The shelf as the player sees it: opened, listed and priced against the purse.
+	_hud.call("show_tasks")
+	var rows: Node = _find_by_name(_hud, "WareRows")
+	_check(rows != null, "the elder's panel carries a shelf")
+	if rows != null:
+		_check(rows.get_child_count() == Shop.WARES.size(),
+			"with one row per ware", "%d rows" % rows.get_child_count())
+		var buys: int = 0
+		var buyable: int = 0
+		for id: String in ["hide", "dantian", "legs"]:
+			var button: Button = _find_by_name(rows, "Buy_%s" % id) as Button
+			if button == null:
+				continue
+			buys += 1
+			if not button.disabled:
+				buyable += 1
+		_check(buys == 3, "and a Buy button on the wares that have one", "%d of 3" % buys)
+		# The purse was filled above, so every affordable ware must be live: a shelf of
+		# greyed-out buttons with a full purse is the bug this is here to catch.
+		_check(buyable == 3, "live because the purse covers them", "%d of 3" % buyable)
+		_check(_purse_text(_hud).contains("crystal"), "and the purse printed on it",
+			_purse_text(_hud))
+	_hud.call("close_tasks")
+
+	Shop.bought = bought_before
+	PlayerData.stats = stats_before
+	PlayerData.crystals = crystals_before
+	PlayerData.abilities = abilities_before
+
+
+## The crystal count as the shelf prints it. Read through the label rather than through
+## PlayerData so the check is on what is displayed, not on what is remembered.
+func _purse_text(hud: Node) -> String:
+	for child in hud.find_children("*", "Label", true, false):
+		var label: Label = child
+		if label.text.contains("crystal"):
+			return label.text
+	return ""
+
+
 ## The abilities are the point of the chain, so each one is unlocked and *used*: a
 ## double jump that does not lift the body, or a dash that goes no faster than a run, is
 ## a line in a save file rather than a feature.
@@ -3132,6 +4164,599 @@ func _test_regen() -> void:
 		"%.2f/s at %.0f hp against %.2f/s at %.0f hp" % [small_rate, small_cap, large_rate, doubled_cap])
 	PlayerData.stats["hp"]["cap"] = cap
 	PlayerData.restore_all()
+
+
+## The effects the checks below actually exercise, by key.
+##
+## This list is the section's own coverage guard, and it is the most valuable line in it. An
+## effect key that is spelled differently in a table and in the code that reads it — `wards`
+## against `warded` — is a capability that never fires for anybody, while the panel lists it
+## as held, the tooltip explains what it does, and nothing anywhere fails. No assertion about
+## a single effect can catch that, because every assertion is about an effect that *does*
+## fire. What catches it is the pair of checks below: every key the tables grant appears here,
+## and every key here is one the tables grant.
+const PROBED_EFFECTS: Array = [
+	"cleave", "crush", "thick_skin", "iron_skin", "unshaken", "warded",
+	"mending", "second_wind", "iron_bones", "blood_boil",
+	"softfoot", "meteor", "sky_step", "surefoot", "burst",
+	"deep_well", "jade_skin", "dantian_bell", "qi_bolt", "flight",
+]
+
+
+## What a stat *becomes*, checked by doing it.
+##
+## The table is easy to believe and easy to get wrong, so nothing here is read back from it.
+## Each threshold is put exactly where it sits, and then the thing it claims to grant is
+## performed: a second body takes a share of a blow, a body heals three times as fast after
+## five quiet seconds, the next lethal blow does not end it, a landing moves everything
+## standing nearby, a sprint leaves the line a third quicker. The accessors are checked too,
+## but only for the parts no player can feel — a recharge that halves, a cost that drops.
+##
+## The window at the end is the other half of the section. A capability that arrives silently
+## is a capability the player will never know they have, so every one of these is granted
+## through the same signal a rank is and the announcements are collected as they happen.
+func _test_attainments() -> void:
+	_section("Attainments")
+	if _player == null:
+		return
+	_release_game_input()
+	Training.stop()
+	Cultivation.stop_meditation()
+	var announced: Array = []
+	var collector := func(text: String, _kind: String) -> void: announced.append(text)
+	PlayerData.log_message.connect(collector)
+	# A clean body at its starting caps: nothing held, so every check below starts from "no
+	# technique" and earns exactly one.
+	PlayerData._build_defaults()
+	PlayerData.stats_changed.emit()
+	PlayerData.restore_all()
+	PlayerData._shield_ready_ms = 0
+	PlayerData._wind_ready_ms = 0
+
+	var rows: Array = PlayerData.attainment_rows()
+	var held: int = 0
+	for row: Dictionary in rows:
+		if bool(row["attained"]):
+			held += 1
+	_check(held == 0, "a body at its starting caps holds nothing", "%d held" % held)
+	_check(rows.size() == PlayerData.attainment_total(),
+		"the panel lists every row the tables hold",
+		"%d rows against %d" % [rows.size(), PlayerData.attainment_total()])
+	_check(rows.size() == 20, "twenty things a body can become", "%d" % rows.size())
+	# Reachability. A threshold above its stat's hard ceiling is an entry nobody can ever
+	# earn — jump is the one stat with a ceiling, so a retune of its base below 2 m would
+	# silently make METEOR unreachable while the table still promised it.
+	for stat_id: String in PlayerData.STAT_ORDER:
+		for entry: Dictionary in (PlayerData.ATTAINMENTS[stat_id] as Array):
+			var want: float = PlayerData.threshold(stat_id, entry)
+			_check(want < PlayerData.cap_ceiling(stat_id),
+				"%s is inside %s's ceiling" % [String(entry["label"]), PlayerData.label(stat_id)],
+				"needs %s, ceiling %s" % [
+					PlayerData.format_value(stat_id, want),
+					PlayerData.format_value(stat_id, PlayerData.cap_ceiling(stat_id)),
+				])
+	var keys: Array = PlayerData.all_effect_keys()
+	var unprobed: Array = []
+	for key: String in keys:
+		if not PROBED_EFFECTS.has(key):
+			unprobed.append(key)
+	_check(unprobed.is_empty(), "every effect in the tables is exercised below",
+		", ".join(unprobed))
+	var unknown: Array = []
+	for key: String in PROBED_EFFECTS:
+		if not keys.has(key):
+			unknown.append(key)
+	_check(unknown.is_empty(), "and no check exercises a key no table grants",
+		", ".join(unknown))
+
+	# ------------------------------------------------------------- ATTACK
+	var striker: Node = _player.get_node_or_null("Striker")
+	var posts: Array = get_tree().get_nodes_in_group("training_post")
+	_check(striker != null, "the body carries a striker")
+	# Held outside the block: WARDED is measured further down against the same post, because
+	# a post is a real body with a `take_hit` and a blow given back needs something that can
+	# be given it.
+	var first_post: Node3D = posts[0] as Node3D if posts.size() >= 1 else null
+	var second_post: Node3D = posts[1] as Node3D if posts.size() >= 2 else null
+	if striker != null and first_post != null and second_post != null:
+		var second_home: Vector3 = second_post.global_position
+		var refill: float = float(second_post.get("restuff_per_second"))
+		# Cleave's radius is 2.2 m and the camp's posts are not placed with that in mind, so
+		# the pair is stood together for the measurement and put back afterwards. Refill is
+		# off for the same reason: at the shipped rate it puts back about five points during
+		# the frames a blow takes to land, which is a quarter of the primary hit and more than
+		# half of the carried one.
+		second_post.global_position = first_post.global_position + Vector3(1.5, 0.0, 0.8)
+		second_post.set("restuff_per_second", 0.0)
+		first_post.set("restuff_per_second", 0.0)
+		_player.call("warp_to", first_post.global_position + Vector3(1.3, 1.0, 0.0))
+		await _settle(8)
+		var plain: Dictionary = await _swing_pair(first_post, second_post)
+		_check(float(plain["primary"]) > 0.0, "a post in reach takes the blow")
+		_check(not bool(plain["both"]), "and the one beside it takes nothing",
+			"%.1f and %.1f" % [plain["first"], plain["second"]])
+
+		_grant("attack", 0)
+		_check(PlayerData.has_effect("cleave"), "CLEAVE at four times the starting fist")
+		await _settle(70)
+		var carried: Dictionary = await _swing_pair(first_post, second_post)
+		_check(bool(carried["both"]), "with CLEAVE one blow reaches two bodies",
+			"%.1f and %.1f" % [carried["first"], carried["second"]])
+		var share: float = float(carried["carried"]) / maxf(0.001, float(carried["primary"]))
+		_check(_near(share, 0.4, 0.04), "and the second one takes two fifths of it",
+			"%.0f%% of %.1f" % [share * 100.0, carried["primary"]])
+		second_post.global_position = second_home
+		second_post.set("restuff_per_second", refill)
+		first_post.set("restuff_per_second", refill)
+
+	# The crushing roll, measured over a run of blows rather than hoped for in one: a
+	# one-in-five chance is invisible to a single swing and unmissable in a mean.
+	var rng := RandomNumberGenerator.new()
+	rng.seed = 7717
+	var samples: int = 3000
+	_set_cap("attack", 5.0)
+	var unit: float = PlayerData.strike_damage(1.0)
+	var plain_total: float = 0.0
+	for i in samples:
+		plain_total += PlayerData.strike_damage_rolled(rng)
+	var plain_mean: float = plain_total / float(samples)
+	_check(_near(plain_mean / unit, 1.0, 0.03), "an untrained fist lands the plain blow on average",
+		"%.3f of it" % (plain_mean / unit))
+	_grant("attack", 1)
+	_check(PlayerData.has_effect("crush"), "CRUSHING at ten times the starting fist")
+	# A heavier fist is a bigger number, so the mean is measured against *that* fist's plain
+	# blow. Comparing it against the mean from the smaller cap would report a 50-strength
+	# body as a tenfold crushing bonus.
+	var heavy: float = PlayerData.strike_damage(1.0)
+	var rolled_total: float = 0.0
+	var worst: float = 0.0
+	var lightest: float = INF
+	for i in samples:
+		var roll: float = PlayerData.strike_damage_rolled(rng)
+		worst = maxf(worst, roll)
+		lightest = minf(lightest, roll)
+		rolled_total += roll
+	var rolled_mean: float = rolled_total / float(samples)
+	_check(_near(rolled_mean / heavy, 1.2, 0.05),
+		"CRUSHING adds a fifth to the average blow", "%.0f%%" % ((rolled_mean / heavy - 1.0) * 100.0))
+	_check(worst <= heavy * 1.15 * 2.0 + 0.001 and worst >= heavy * 0.85 * 2.0 - 0.001,
+		"and a crush is exactly double, never more nor less", "%.2f of a %.2f blow" % [worst, heavy])
+	_check(lightest >= heavy * 0.85 - 0.001,
+		"with no blow landing lighter than the swing itself", "%.2f of %.2f" % [lightest, heavy])
+
+	# BLOOD BOIL is the one entry switched on by being hurt rather than by training, so it is
+	# checked in both states: the same arm, the same table, a different pool.
+	_set_cap("attack", 15.01)
+	_grant("hp", 0)
+	_check(PlayerData.has_effect("blood_boil"), "BLOOD BOIL at three times the pool and the fist")
+	var cap_hp: float = PlayerData.get_cap("hp")
+	PlayerData.stats["hp"]["current"] = cap_hp * 0.9
+	var whole_total: float = 0.0
+	for i in samples:
+		whole_total += PlayerData.strike_damage_rolled(rng)
+	PlayerData.stats["hp"]["current"] = cap_hp * 0.2
+	var hurt_total: float = 0.0
+	for i in samples:
+		hurt_total += PlayerData.strike_damage_rolled(rng)
+	var boil: float = (hurt_total / whole_total) - 1.0
+	_check(_near(boil, 0.25, 0.05), "below a third of the pool the blows land a quarter harder",
+		"%.0f%%" % (boil * 100.0))
+
+	# ------------------------------------------------------------- DEFENSE / BODY
+	# One defense cap throughout, so the only thing moving is the physique: DEFENSE has its
+	# own curve on top of these and a measurement that changed both would prove neither.
+	_set_cap("defense", 15.01)
+	_set_cap("body", 5.0)
+	PlayerData.restore_all()
+	var raw: float = 20.0
+	var taken_plain: float = PlayerData.apply_damage(raw, "blow")
+	_grant("body", 0)
+	_check(PlayerData.has_effect("thick_skin"), "THICK SKIN at twice the starting frame")
+	var taken_thick: float = PlayerData.apply_damage(raw, "blow")
+	_check(_near(taken_thick / taken_plain, 0.92, 0.012),
+			"THICK SKIN takes eight per cent off every blow",
+			"%.1f against %.1f" % [taken_thick, taken_plain])
+	_grant("body", 1)
+	_check(PlayerData.has_effect("iron_bones"), "IRON BONES at five times it")
+	_check(PlayerData.has_effect("iron_skin"), "and IRON SKIN, the frame over the guard")
+	var taken_iron: float = PlayerData.apply_damage(raw, "blow")
+	_check(_near(taken_iron / taken_plain, 0.92 * 0.88, 0.02),
+		"the two of them stack, a fifth off in total",
+		"%.1f against %.1f" % [taken_iron, taken_plain])
+
+	# UNSHAKEN and WARDED, which both need a body throwing the blow.
+	# A bare node is enough for the first: the reflection is the only part that talks to the
+	# source, and reflection is the second check.
+	var source := Node3D.new()
+	get_tree().root.add_child(source)
+	source.global_position = (_player as Node3D).global_position + Vector3(3.0, 0.0, 0.0)
+	_set_cap("defense", 5.0)
+	PlayerData.restore_all()
+	var push_plain: float = 0.0
+	_player.velocity = Vector3.ZERO
+	_player.call("take_enemy_blow", 4.0, source)
+	push_plain = _player.velocity.length()
+	_check(push_plain > 0.5, "a blow throws a body that has not learned to stand it",
+		"%.2f m/s" % push_plain)
+	_set_cap("defense", 15.01)
+	_check(PlayerData.has_effect("unshaken"), "UNSHAKEN at three times the starting guard")
+	_player.velocity = Vector3.ZERO
+	_player.call("take_enemy_blow", 4.0, source)
+	_check(_player.velocity.length() < 0.05, "and then a blow no longer moves it at all",
+		"%.3f m/s" % _player.velocity.length())
+	# WARDED, paid back through the same door a strike goes through: the body it came from
+	# really loses that much, which is the only version of this that is worth checking.
+	_set_cap("defense", 40.01)
+	_check(PlayerData.has_effect("warded"), "WARDED at eight times it")
+	if first_post != null:
+		PlayerData.restore_all()
+		# The xp bar is emptied first. A blow trains the pool it lands on, and a rank that
+		# happens *inside* the same call widens the cap and tops the pool up by what it grew —
+		# so the blood the body is seen to lose is less than the blow that dealt it, and the
+		# reflection is measured against a smaller number than the one it was paid out of.
+		PlayerData.stats["hp"]["progress"] = 0.0
+		var blood_before: float = PlayerData.get_value("hp")
+		var stuffing_before: float = float(first_post.get("stuffing"))
+		_player.call("take_enemy_blow", 20.0, first_post)
+		var blood_lost: float = blood_before - PlayerData.get_value("hp")
+		var post_lost: float = stuffing_before - float(first_post.get("stuffing"))
+		_check(blood_lost > 0.5, "the blow lands on the body", "%.1f hp" % blood_lost)
+		_check(post_lost > 0.0, "and part of it is given back to the one that threw it",
+			"%.2f of %.1f" % [post_lost, blood_lost])
+		_check(_near(post_lost / maxf(0.001, blood_lost), 0.15, 0.02),
+			"at fifteen per cent, which is the number the table promises",
+			"%.1f%% of %.1f" % [(post_lost / maxf(0.001, blood_lost)) * 100.0, blood_lost])
+	source.queue_free()
+
+	# ------------------------------------------------------------- HEALTH
+	# Mending at eight times the starting pool, so the rate it triples is a rate worth
+	# measuring, and Second Wind with it.
+	_set_cap("defense", 5.0)
+	_set_cap("body", 5.0)
+	_grant("hp", 1)
+	_check(PlayerData.has_effect("mending") and PlayerData.has_effect("second_wind"),
+		"MENDING and SECOND WIND at eight times the starting pool")
+	PlayerData.restore_all()
+	PlayerData.apply_damage(6.0, "fall")
+	_check(PlayerData.regen_multiplier() == 1.0,
+		"MENDING pays nothing while the blood is still fresh — a body being hit is not a body mending")
+	PlayerData.stats["hp"]["current"] = PlayerData.get_cap("hp") * 0.4
+	var slow: Dictionary = await _measure_heal(90)
+	# The five seconds of quiet are fast-forwarded rather than slept through. Sleeping them
+	# would cost the wall clock of the whole section to observe a rate, and the clock being
+	# jumped is the same one the loop reads — what is *not* skipped is the check above, which
+	# is the half that says the quiet has to be earned.
+	PlayerData._since_hurt = PlayerData.MENDING_QUIET + 1.0
+	PlayerData.stats["hp"]["current"] = PlayerData.get_cap("hp") * 0.4
+	var fast: Dictionary = await _measure_heal(90)
+	_check(PlayerData.regen_multiplier() == 3.0, "after the quiet it is worth triple")
+	var heal_ratio: float = float(fast["rate"]) / maxf(0.001, float(slow["rate"]))
+	_check(_near(heal_ratio, 3.0, 0.35), "and the body really heals three times as fast",
+		"%.2f/s against %.2f/s" % [fast["rate"], slow["rate"]])
+
+	# Second Wind, from both sides: first the lethal blow that ends a body without it.
+	_set_cap("hp", 300.01)
+	PlayerData.stats["hp"]["current"] = 20.0
+	PlayerData.apply_damage(9999.0, "fall")
+	_check(PlayerData.get_value("hp") == 0.0, "without it, the killing blow empties the pool")
+	_grant("hp", 1)
+	PlayerData.restore_all()
+	PlayerData._wind_ready_ms = 0
+	PlayerData.stats["hp"]["current"] = 20.0
+	PlayerData.apply_damage(9999.0, "fall")
+	var standing: float = PlayerData.get_value("hp")
+	_check(standing > 0.0, "SECOND WIND leaves the body standing", "%.1f hp" % standing)
+	_check(_near(standing, PlayerData.get_cap("hp") * 0.25, 0.5),
+		"at a quarter of the pool", "%.1f of %.1f" % [standing, PlayerData.get_cap("hp")])
+	_check(not PlayerData.second_wind_ready(), "and it is spent for the next ninety seconds")
+	PlayerData.stats["hp"]["current"] = 20.0
+	PlayerData.apply_damage(9999.0, "fall")
+	_check(PlayerData.get_value("hp") == 0.0, "so the second killing blow is the last one")
+
+	# The collapse that follows, which is where Iron Bones lives.
+	_set_cap("body", 10.01)
+	await _settle(6)
+	_check(bool(_player.get("_downed")), "an emptied body goes down")
+	var slow_down: float = float(_player.get("_downed_timer"))
+	_grant("body", 1)
+	PlayerData.restore_all()
+	await _await_upright()
+	_check(not bool(_player.get("_downed")), "and gets up on its own timer")
+	PlayerData.stats["hp"]["current"] = 0.0
+	await _settle(6)
+	var fast_down: float = float(_player.get("_downed_timer"))
+	_check(fast_down < slow_down * 0.6, "IRON BONES halves how long that takes",
+		"%.2fs against %.2fs" % [fast_down, slow_down])
+	PlayerData.restore_all()
+	await _await_upright()
+	_check(not bool(_player.get("_downed")), "and then the body is on its feet again")
+
+	# ------------------------------------------------------------- JUMP
+	# SOFTFOOT, measured as a drop rather than as a number: five metres costs blood on a
+	# plain body and nothing on a trained one, and seven costs blood on both — the threshold
+	# moved, it did not vanish.
+	_set_cap("jump", 1.6)
+	var flat: Vector3 = _flat_ground_near(_player as Node3D)
+	_check(not PlayerData.has_effect("softfoot"), "nothing held at the starting jump")
+	var five_plain: float = await _drop_and_measure(flat, 5.0)
+	_check(five_plain > 0.5, "a five metre drop hurts a body that lands badly",
+		"%.1f hp" % five_plain)
+	_grant("jump", 0)
+	_check(PlayerData.has_effect("softfoot"), "SOFTFOOT at four times the starting jump")
+	var five_soft: float = await _drop_and_measure(flat, 5.0)
+	_check(five_soft < 0.05, "and the same drop costs it nothing", "%.1f hp" % five_soft)
+	# Ten rather than seven, because where the body comes down is not always the *terrain*:
+	# a camp is full of posts and boulders, and landing on one of those shortens the fall by
+	# its own height. At seven metres a 1.3 m rock left the fall just inside Softfoot's six,
+	# and the check read the rock rather than the rule.
+	var ten_soft: float = await _drop_and_measure(flat, 10.0)
+	_check(ten_soft > 0.5, "past six metres it still lands like anything else",
+		"%.1f hp" % ten_soft)
+
+	# METEOR: a landing that moves everything standing near it, and nothing further away.
+	var raiders: Array = []
+	var camps_node: Node = get_tree().root.get_node_or_null("Main/EnemyCamps")
+	if camps_node != null and camps_node.has_method("enemies"):
+		raiders = camps_node.call("enemies")
+	_set_cap("jump", 16.01)
+	_check(PlayerData.has_effect("meteor"), "METEOR at ten times the starting jump")
+	_check(_near(PlayerData.stagger_radius(), 3.5, 0.01), "its shockwave reaches three and a half metres")
+	if raiders.size() >= 2:
+		var near_raider := raiders[0] as CharacterBody3D
+		var far_raider := raiders[1] as CharacterBody3D
+		var spot: Vector3 = _flat_ground_near(_player as Node3D)
+		# The two raiders are stood where the landing can and cannot reach them. They are
+		# placed rather than found, because a raider that happens to be walking through the
+		# spot proves nothing about the radius.
+		near_raider.global_position = spot + Vector3(1.5, 0.6, 0.0)
+		far_raider.global_position = spot + Vector3(8.0, 0.6, 0.0)
+		PlayerData.stats["hp"]["current"] = PlayerData.get_cap("hp")
+		_player.call("warp_to", spot + Vector3(0.0, 7.0, 0.0))
+		await _land(_player)
+		await _settle(2)
+		_check(float(near_raider.call("stagger_left")) > 0.0,
+			"a hard landing knocks a raider beside it off its feet",
+			"%.2fs" % float(near_raider.call("stagger_left")))
+		_check(float(far_raider.call("stagger_left")) == 0.0,
+			"and one eight metres away does not notice")
+
+	# SKY STEP, which is the only entry that adds a jump rather than changing one.
+	_set_cap("jump", 1.6)
+	_set_cap("speed", 5.0)
+	var granted_jumps: int = int(PlayerData.abilities.get("air_jumps", 0))
+	_check(PlayerData.air_jumps() == granted_jumps, "no jump in the air without it")
+	_set_cap("jump", 6.41)
+	_set_cap("speed", 20.01)
+	_check(PlayerData.has_effect("sky_step"), "SKY STEP at four times the jump and the run")
+	_check(PlayerData.air_jumps() == granted_jumps + 1, "which is one more jump than training gave",
+		"%d against %d" % [PlayerData.air_jumps(), granted_jumps])
+	_check(_player.call("air_jumps_left") == PlayerData.air_jumps(),
+		"and the body is holding it")
+
+	# ------------------------------------------------------------- SPEED
+	# SUREFOOT: a number that halves its effect would still be a number, so what is checked
+	# is the slope the engine is actually letting the body climb.
+	_set_cap("speed", 5.0)
+	_check(_near(rad_to_deg(_player.floor_max_angle), 55.0, 1.0),
+		"a fresh body can run up fifty-five degrees")
+	_set_cap("speed", 12.51)
+	_check(PlayerData.has_effect("surefoot"), "SUREFOOT at two and a half times the starting run")
+	_check(_near(rad_to_deg(_player.floor_max_angle), 70.0, 1.0),
+		"and then fifteen degrees more", "%.1f degrees" % rad_to_deg(_player.floor_max_angle))
+
+	# BURST: the first three quarters of a second of a sprint, measured as ground covered.
+	# Only the *cap* moves between the two runs — the allocation, which is the cruise ceiling
+	# both runs share, is set explicitly and left alone, or a faster sprint would be
+	# indistinguishable from a higher top speed.
+	var run_start: Vector3 = _flat_ground_near(_player as Node3D)
+	_set_cap("speed", 20.0)
+	PlayerData.set_allocation("speed", 20.0)
+	var cruise: float = await _launch_speed(run_start)
+	_check(not PlayerData.has_effect("burst"), "no launch bonus below three times it")
+	_check(cruise <= PlayerData.max_speed() * PlayerData.speed_multiplier() + 0.5,
+		"a plain sprint never passes its own top speed", "%.2f m/s" % cruise)
+	_set_cap("speed", 30.01)
+	_check(PlayerData.has_effect("burst"), "BURST at six times the starting run")
+	_check(_near(PlayerData.sprint_burst_seconds(), 0.75, 0.001), "and it lasts three quarters of a second")
+	var launched: float = await _launch_speed(run_start)
+	_check(launched > cruise * 1.15, "the same body leaves the line a third quicker",
+		"%.2f m/s against %.2f m/s after the first quarter second" % [launched, cruise])
+
+	# ------------------------------------------------------------- QI
+	var pressure: Node = _player.call("qi_pressure")
+	_check(pressure != null, "the body carries a qi field")
+	_set_cap("qi", 50.0)
+	_check(not PlayerData.has_effect("deep_well"), "nothing held at the starting dantian")
+	# The two arts are thresholds like everything else, and the *order* between them is the
+	# design: the throw arrives a dantian and a half before the sky does, so the dantian has
+	# something to buy with range before it buys the one thing that changes where a fight can
+	# happen.
+	_check(not PlayerData.has_effect("qi_bolt") and not PlayerData.has_effect("flight"),
+		"and nothing thrown at the sky yet")
+	_set_cap("qi", 125.01)
+	_check(PlayerData.has_effect("qi_bolt"), "QI BOLT at two and a half times the dantian")
+	_check(not PlayerData.has_effect("flight"), "which is still short of the air")
+	_set_cap("qi", 200.01)
+	_check(PlayerData.has_effect("flight"), "CLOUD STEP at four times the dantian")
+	_set_cap("qi", 50.0)
+	if pressure != null:
+		var plain_drain: float = float(PlayerData.RESOURCE_REGEN["qi"]) * float(pressure.SUSTAIN_QI)
+		_set_cap("qi", 150.01)
+		_check(PlayerData.has_effect("deep_well"), "DEEP WELL at three times the starting dantian")
+		_check(_near(float(pressure.call("drain_per_second")) / plain_drain, 0.65, 0.01),
+			"the field costs a third less to hold",
+			"%.3f/s against %.3f/s" % [float(pressure.call("drain_per_second")), plain_drain])
+
+	# JADE SKIN: the one entry that spends the pool instead of the blood.
+	_set_cap("defense", 5.0)
+	_set_cap("qi", 400.01)
+	PlayerData.restore_all()
+	_check(PlayerData.has_effect("jade_skin"), "JADE SKIN at eight times the dantian")
+	var blood: float = PlayerData.get_value("hp")
+	var breath: float = PlayerData.get_value("qi")
+	var through: float = PlayerData.apply_damage(20.0, "blow")
+	_check(through == 0.0, "the shell takes the blow instead of the body", "%.1f hp of it" % through)
+	_check(PlayerData.get_value("hp") == blood, "and not a drop of blood is lost")
+	var paid: float = breath - PlayerData.get_value("qi")
+	_check(_near(paid, PlayerData.get_cap("qi") * 0.12, 0.5),
+		"paid out of the dantian at the share the constant says",
+		"%.1f qi of %.1f" % [paid, PlayerData.get_cap("qi")])
+	_check(not PlayerData.shield_ready(), "and the shell is spent")
+	_check(_near(PlayerData.shield_recharge_seconds(), 18.0, 0.01), "back in eighteen seconds")
+	_set_cap("defense", 15.01)
+	_check(PlayerData.has_effect("dantian_bell"), "DANTIAN BELL at three times the well and the guard")
+	_check(_near(PlayerData.shield_recharge_seconds(), 9.0, 0.01),
+		"which halves the wait", "%.1fs" % PlayerData.shield_recharge_seconds())
+
+	# ------------------------------------------------------------- the announcement
+	_check(announced.size() >= 8, "every capability said what it does as it arrived",
+		"%d lines" % announced.size())
+	var named_second_wind: bool = false
+	var explained: bool = false
+	for line: String in announced:
+		if line.begins_with("SECOND WIND"):
+			named_second_wind = true
+			explained = line.contains("quarter")
+	var announced_labels: Array = []
+	for row: Dictionary in PlayerData.attainment_rows():
+		announced_labels.append(String(row["label"]).to_upper())
+	var silent: Array = []
+	for label: String in announced_labels:
+		var spoken: bool = false
+		for line: String in announced:
+			if line.begins_with(label):
+				spoken = true
+				break
+		if not spoken:
+			silent.append(label)
+	_check(silent.is_empty(), "no capability arrived silently", ", ".join(silent))
+	_check(named_second_wind and explained,
+		"and the line names the technique and what it does rather than only that it happened")
+
+	PlayerData.log_message.disconnect(collector)
+	# Put the body back the way the next section expects to find it.
+	PlayerData._build_defaults()
+	PlayerData.stats_changed.emit()
+	PlayerData.restore_all()
+	PlayerData.set_allocation("speed", PlayerData.get_cap("speed"))
+	PlayerData.set_allocation("jump", PlayerData.get_cap("jump"))
+	(_player as Node3D).call("warp_to", _player.call("_spawn_point"))
+	await _land(_player)
+
+
+## Puts a stat's earned cap exactly where a threshold sits, and lets the body notice.
+##
+## Written directly rather than trained to, because a rank takes half a minute of real play
+## and what is being checked is the *link* between a cap and a capability — the same shortcut
+## the drill section takes for BODY. Both signals are fired, so this is the same path a real
+## rank takes: the capability is derived from the caps, and the climb limit is re-applied.
+func _grant(stat_id: String, index: int) -> bool:
+	var list: Array = PlayerData.ATTAINMENTS.get(stat_id, [])
+	if index >= list.size():
+		return false
+	_set_cap(stat_id, PlayerData.threshold(stat_id, list[index]) + 0.01)
+	return true
+
+
+## Moves an earned cap and tells everything that cares, without the training that would
+## normally have paid for it.
+func _set_cap(stat_id: String, value: float) -> void:
+	var before: float = PlayerData.get_cap(stat_id)
+	if is_equal_approx(before, value):
+		PlayerData.stats_changed.emit()
+		return
+	PlayerData.stats[stat_id]["cap"] = value
+	PlayerData.stat_cap_gained.emit(stat_id, before, value)
+	PlayerData.stats_changed.emit()
+
+
+## One swing at a pair of posts, and what it did to each.
+##
+## The stuffing each post came in with is read rather than assumed: posts refill over time
+## and these two have been hit earlier in the run, so "it lost its stuffing" and "it gained
+## it back slower" are the same number read from opposite ends.
+func _swing_pair(first: Node3D, second: Node3D) -> Dictionary:
+	var before_first: float = float(first.get("stuffing"))
+	var before_second: float = float(second.get("stuffing"))
+	_press_key(KEY_F)
+	await _settle(40)
+	var a: float = maxf(0.0, before_first - float(first.get("stuffing")))
+	var b: float = maxf(0.0, before_second - float(second.get("stuffing")))
+	return {
+		"first": a, "second": b,
+		"primary": maxf(a, b), "carried": minf(a, b),
+		"both": a > 0.001 and b > 0.001,
+	}
+
+
+## Waits out a collapse. Counted in frames rather than in seconds because the timer the
+## controller counts down and this loop both advance on the physics delta, and a suite that
+## slept for a wall-clock four seconds could still be watching a body that had two left.
+func _await_upright(limit: int = 900) -> void:
+	for i in limit:
+		if not bool(_player.get("_downed")):
+			return
+		await get_tree().physics_frame
+
+
+## Flat ground near a body, so a drop or a sprint is measured on the level rather than on
+## whatever slope it happened to be standing on.
+func _flat_ground_near(body: Node3D) -> Vector3:
+	var here: Vector3 = body.global_position
+	var level: float = float(_terrain.call("surface_height_at", here.x, here.z))
+	for attempt in 24:
+		var angle: float = TAU * float(attempt) / 24.0
+		var candidate := Vector2(here.x + cos(angle), here.z + sin(angle))
+		var height: float = float(_terrain.call("surface_height_at", candidate.x, candidate.y))
+		if absf(height - level) > 0.6:
+			continue
+		var flat_enough: bool = true
+		for probe in 4:
+			var step: float = 1.5 * float(probe + 1)
+			var ahead: float = float(_terrain.call(
+				"surface_height_at", candidate.x + step, candidate.y + step
+			))
+			if absf(ahead - height) > 0.9:
+				flat_enough = false
+				break
+		if flat_enough:
+			return Vector3(candidate.x, height + 0.4, candidate.y)
+	return Vector3(here.x, level + 0.4, here.z)
+
+
+## Drops the body `metres` onto flat ground and reports the blood it cost.
+##
+## The pool is filled first, and that is not tidiness: the body heals a share of its cap every
+## second, so a fall measured from half a bar would be partly hidden by the healing that runs
+## underneath it — and the whole claim being checked is that a *small* fall costs nothing.
+func _drop_and_measure(at: Vector3, metres: float) -> float:
+	PlayerData.stats["hp"]["current"] = PlayerData.get_cap("hp")
+	(_player as Node3D).call("warp_to", at + Vector3(0.0, metres, 0.0))
+	await _land(_player)
+	await _settle(2)
+	return PlayerData.get_cap("hp") - PlayerData.get_value("hp")
+
+
+## Sprint speed a quarter of a second after the gun.
+##
+## From a standstill, because that is the only state Burst is granted from, and sampled over
+## a window short enough that neither run has reached its own ceiling — past that point the
+## two are the same body at the same speed and the launch is over.
+func _launch_speed(at: Vector3) -> float:
+	_release_game_input()
+	PlayerData.stats["hp"]["current"] = PlayerData.get_cap("hp")
+	(_player as Node3D).call("warp_to", at)
+	await _land(_player)
+	await _settle(4)
+	Input.action_press("move_forward")
+	Input.action_press("sprint")
+	var top: float = 0.0
+	for i in 18:
+		await get_tree().physics_frame
+		top = maxf(top, Vector2(_player.velocity.x, _player.velocity.z).length())
+	_release_game_input()
+	await _settle(4)
+	return top
 
 
 ## HP restored over `frames` frames, in points per *game* second.
@@ -3299,6 +4924,144 @@ func _test_qi_pressure() -> void:
 	PlayerData.stats["qi"]["cap"] = saved_cap
 	PlayerData.stats["qi"]["current"] = minf(saved_qi, saved_cap)
 	skill.call("stop")
+
+
+## The two things a deep enough dantian buys: a ball of your own aura thrown at a distance,
+## and the air under a held jump.
+##
+## Both are checked where they are *paid for* rather than where they are described. A throw
+## that spawned a ball but took no qi is free power; a flight that lifted the body but never
+## owed the pool is a mode rather than a technique. Every other art in this game is priced,
+## and these two are the expensive ones — so the price is the half of each claim worth
+## measuring.
+func _test_qi_arts() -> void:
+	_section("The qi arts")
+	if _player == null:
+		return
+	_release_game_input()
+	Training.stop()
+	Cultivation.stop_meditation()
+	var saved_cap: float = PlayerData.get_cap("qi")
+
+	# ------------------------------------------------------------ the ball of aura
+	# Below the gate first: the key has to *refuse*, not merely be pointless.
+	_set_cap("qi", 100.0)
+	PlayerData.restore_all()
+	_check(not PlayerData.has_effect("qi_bolt"),
+		"a shallow dantian throws nothing", "%.0f qi held" % PlayerData.get_cap("qi"))
+	_check(not bool(_player.call("throw_bolt")), "and the key refuses")
+	_set_cap("qi", 130.01)
+	PlayerData.restore_all()
+	_check(PlayerData.has_effect("qi_bolt"), "two and a half dantians buys the throw")
+
+	var qi_before: float = PlayerData.get_value("qi")
+	var in_flight_before: int = get_tree().get_nodes_in_group("qi_bolt").size()
+	var thrown: bool = bool(_player.call("throw_bolt"))
+	await _settle(2)
+	var bolts: Array = get_tree().get_nodes_in_group("qi_bolt")
+	var spent: float = qi_before - PlayerData.get_value("qi")
+	_check(thrown and bolts.size() > in_flight_before, "and there is a ball in the air",
+		"%d in flight" % bolts.size())
+	_check(_near(spent, PlayerData.get_cap("qi") * 0.05, 1.0),
+		"paid for out of the dantian at the share the constant says",
+		"%.1f qi of a %.0f pool" % [spent, PlayerData.get_cap("qi")])
+	_check(not bool(_player.call("throw_bolt")), "and it cannot be spammed")
+	# It wears the aura. The ball is the equipped element's own colour rather than a generic
+	# blue, which is what makes "your aura, thrown" a statement about the game rather than
+	# about the sphere mesh.
+	var aura_node: Node = (_player as Node3D).get_node_or_null("Aura")
+	if not bolts.is_empty():
+		var ball: Node = bolts[0]
+		_check(bool(ball.call("from_player")), "the ball knows whose it is")
+		if aura_node != null and aura_node.has_method("meditation_color"):
+			var expected: Color = aura_node.call("meditation_color")
+			_check((ball.call("tint") as Color).is_equal_approx(expected),
+				"and wears the colour of the aura you have on",
+				"%s against %s" % [ball.call("tint"), expected])
+	# It hurts what it is thrown at. Asked of the projectile rather than of the aim, because
+	# the aim comes off a camera nobody is holding in a headless run — and the ball is the
+	# thing under test here, not the shooting.
+	var bolt_script: GDScript = load("res://scripts/enemy/qi_bolt.gd")
+	var victim: Node3D = null
+	for node: Node in get_tree().get_nodes_in_group("enemy"):
+		var candidate := node as Node3D
+		if candidate != null and not bool(candidate.call("is_champion")) \
+				and not bool(candidate.call("is_dead")):
+			victim = candidate
+			break
+	_check(victim != null, "there is a raider to throw at")
+	if victim != null:
+		# Both bodies are put on level ground first. A ball thrown across a hillside spawns
+		# inside the hill and bursts on it — which is correct behaviour and a useless
+		# measurement, because what is under test is the throw and not the relief of wherever
+		# a raider happened to be standing. `_flat_ground_near` is the same probe the other
+		# sections stand on.
+		var kept: Vector3 = victim.global_position
+		var victim_hp: float = float(victim.get("hp"))
+		var level: Vector3 = _flat_ground_near(_player as Node3D)
+		victim.global_position = level + Vector3(0.0, 1.0, 0.0)
+		await _settle(2)
+		var chest: Vector3 = victim.global_position + Vector3(0.0, 0.9, 0.0)
+		var from: Vector3 = chest + Vector3(3.5, 0.0, 0.0)
+		var fired: Node = bolt_script.spawn(_player.get_parent(), from,
+			(chest - from).normalized(), 8.0, 26.0, Color("6ec8ff"), _player)
+		_check(fired != null, "a ball can be put in the air by hand")
+		if fired != null:
+			await _settle(24)
+			_check(float(victim.get("hp")) < victim_hp,
+				"and it bursts on the raider it was sent at",
+				"%.1f hp -> %.1f over three and a half metres" % [victim_hp, float(victim.get("hp"))])
+		victim.set("hp", victim_hp)
+		victim.global_position = kept
+
+	# ------------------------------------------------------------ walking on the air
+	_set_cap("qi", 190.0)
+	PlayerData.restore_all()
+	_check(not PlayerData.has_effect("flight"), "no sky below four dantians")
+	_set_cap("qi", 210.01)
+	PlayerData.restore_all()
+	_check(PlayerData.has_effect("flight"), "four times the dantian buys Cloud Step")
+
+	var ground: Vector3 = _flat_ground_near(_player as Node3D)
+	(_player as Node3D).call("warp_to", ground + Vector3(0.0, 3.0, 0.0))
+	await _settle(3)
+	# Without the key down first, because a body standing on qi is what is being measured and
+	# a body falling from three metres is not.
+	_check(not bool(_player.call("is_flying")), "falling is still falling")
+	var height_before: float = (_player as Node3D).global_position.y
+	Input.action_press("jump")
+	await _settle(30)
+	var flying: bool = bool(_player.call("is_flying"))
+	var climbed: float = (_player as Node3D).global_position.y - height_before
+	_check(flying, "holding jump in the air holds the body up")
+	_check(climbed > 0.3, "and it climbs rather than sinking",
+		"%.2f m in half a second" % climbed)
+	# The price, over real frames, against the same pool measured with the technique down.
+	# Both halves are taken because a drain smaller than the passive regeneration would read
+	# as "paid for" while costing nothing at all.
+	var with_flight: float = await _measure_qi_rate(90)
+	_check(with_flight < -2.0, "and the pool is being spent the whole time it is held",
+		"%.1f QI/s net" % with_flight)
+	# The ceiling. The ward fences are seventeen metres and a body that could step over one
+	# would sell the path of rings, the champions and the spirit zones for a held key — so
+	# the limit is the ward, not the sky, and it is measured from the ground under the body.
+	await _settle(180)
+	var above: float = (_player as Node3D).global_position.y - ground.y
+	_check(bool(_player.call("is_flying")), "it is still up after three seconds of holding")
+	_check(above <= 9.4, "and it stops nine metres over the ground, under the ward fences",
+		"%.1f m" % above)
+	Input.action_release("jump")
+	await _settle(2)
+	_check(not bool(_player.call("is_flying")), "letting go ends it")
+	await _land(_player)
+	var free_fall: float = await _measure_qi_rate(60)
+	print("  info  net qi aloft %.1f/s against %.1f/s with the key up" % [with_flight, free_fall])
+	_check(free_fall > with_flight + 5.0,
+		"and the pool is measurably better off with the technique down",
+		"%.1f against %.1f QI/s" % [free_fall, with_flight])
+
+	_set_cap("qi", saved_cap)
+	PlayerData.restore_all()
 
 
 ## Net qi per second over a run of real frames, using the engine's own clock for the same

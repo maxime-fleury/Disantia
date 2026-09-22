@@ -234,12 +234,28 @@ var _loaded_cultivation: Dictionary = {}
 var _cultivation_consumed: bool = false
 var _loaded_quests: Dictionary = {}
 var _quests_consumed: bool = false
+var _loaded_shop: Dictionary = {}
+var _shop_consumed: bool = false
+var _loaded_wards: Dictionary = {}
+var _wards_consumed: bool = false
 
 
 func _ready() -> void:
 	_build_defaults()
 	if not load_game():
 		log_message.emit("A new cultivator awakens.", "info")
+	# After the load, so a save arrives with its attainments already in force and does not
+	# announce the whole table on the first frame of play.
+	_recheck_attainments()
+	stat_cap_gained.connect(_on_cap_moved)
+	stats_changed.connect(_recheck_attainments)
+
+
+## A cap moved, which is the only event an attainment cares about. Declared with the signal's
+## own arguments rather than connected to the no-argument version, so the wiring says what it
+## is reacting to instead of relying on Godot dropping arguments.
+func _on_cap_moved(_stat_id: String, _old_cap: float, _new_cap: float) -> void:
+	_recheck_attainments()
 	# Keep ticking while the window is unfocused so autosave stays predictable.
 	process_mode = Node.PROCESS_MODE_ALWAYS
 
@@ -253,6 +269,9 @@ func _notification(what: int) -> void:
 
 
 func _process(delta: float) -> void:
+	# The clock behind Mending. Nothing else in the file counts up; everything else counts
+	# down from a deadline.
+	_since_hurt += delta
 	for id: String in RESOURCE_REGEN:
 		if id == "qi" and suppress_qi_regen:
 			continue
@@ -263,7 +282,11 @@ func _process(delta: float) -> void:
 		if float(entry["current"]) <= 0.0 and HELD_AT_ZERO.has(id):
 			continue
 		var cap: float = entry["cap"]
-		entry["current"] = minf(cap, float(entry["current"]) + cap * float(RESOURCE_REGEN[id]) * delta)
+		# Mending is the one rate an attainment changes, and only while nothing has hit you.
+		var rate: float = float(RESOURCE_REGEN[id])
+		if id == "hp":
+			rate *= regen_multiplier()
+		entry["current"] = minf(cap, float(entry["current"]) + cap * rate * delta)
 	_autosave_accum += delta
 	if _autosave_accum >= AUTOSAVE_SECONDS:
 		_autosave_accum = 0.0
@@ -371,6 +394,507 @@ func group_int(value: int) -> String:
 
 
 # ------------------------------------------------------------------ accessors
+
+## True when a stat id is one this file knows about.
+##
+## Public because half the world hands out cap grants by id — a site's boon, a champion's
+## reward, a ware on the elder's shelf — and the guard for an id that does not exist belongs
+## next to the table that defines them rather than at every call site. Every one of those call
+## sites used to ask `PlayerData.has(...)`, which is not a function on a Node: the call failed
+## and took the rest of the method with it, silently, on the day the site was first found.
+func has_stat(stat_id: String) -> bool:
+	return stats.has(stat_id)
+
+
+# ---------------------------------------------------------------- attainments
+
+## What a stat *becomes*.
+##
+## The problem these solve is that a stat was only ever a bigger number. ATTACK 22 was not a
+## thing you had, it was a quantity you had accumulated: nobody could have said what the
+## difference between 22 and 23 was, and there was no moment anywhere in the game where a
+## stat turned into a capability. Training was a slope, and a slope has no events on it.
+##
+## So every stat has thresholds, and crossing one gives the body something *qualitative* — an
+## effect that changes how it plays rather than how much it is worth. The thresholds are
+## multiples of the stat's own base cap, so "four times your starting strength" means the
+## same thing for a pool of qi and for a fist, and a table entry never has to be rewritten
+## when a base value is retuned.
+##
+## They are derived rather than granted. Nothing is written down, nothing can be lost, and a
+## save cannot be wrong about them: `attainment_index` is asked of the caps themselves every
+## time a cap moves. A granted flag would need a save field, a migration, and a way to be
+## wrong — and the one thing this file must never do is hand out a capability it cannot take
+## back.
+const ATTAINMENTS: Dictionary = {
+	"attack": [
+		{
+			"cap": 4.0, "label": "Cleave", "effect": "cleave",
+			"blurb": "A blow carries: a second body within 2.2 m takes 40% of it.",
+		},
+		{
+			"cap": 10.0, "label": "Crushing", "effect": "crush",
+			"blurb": "One blow in five lands crushing, for double.",
+		},
+	],
+	"hp": [
+		{
+			"cap": 3.0, "label": "Mending", "effect": "mending",
+			"blurb": "Out of a fight, wounds close three times as fast.",
+		},
+		{
+			"cap": 8.0, "label": "Second Wind", "effect": "second_wind",
+			"blurb": "Once every ninety seconds, a killing blow leaves you standing at a quarter.",
+		},
+	],
+	"defense": [
+		{
+			"cap": 3.0, "label": "Unshaken", "effect": "unshaken",
+			"blurb": "Blows no longer move you.",
+		},
+		{
+			"cap": 8.0, "label": "Warded", "effect": "warded",
+			"blurb": "Some of every blow you take is given back to the one who threw it.",
+		},
+	],
+	"speed": [
+		{
+			"cap": 2.5, "label": "Surefoot", "effect": "surefoot",
+			"blurb": "Steeper ground stays runnable, and you are an eighth quicker than training alone.",
+		},
+		{
+			"cap": 6.0, "label": "Burst", "effect": "burst",
+			"blurb": "The first three quarters of a second of a sprint is a third faster.",
+		},
+	],
+	"jump": [
+		{
+			"cap": 4.0, "label": "Softfoot", "effect": "softfoot",
+			"blurb": "Falls hurt half as much and the safe drop is two metres deeper.",
+		},
+		{
+			"cap": 10.0, "label": "Meteor", "effect": "meteor",
+			"blurb": "A landing from six metres staggers everything within three and a half.",
+		},
+	],
+	"qi": [
+		{
+			"cap": 2.5, "label": "Qi Bolt", "effect": "qi_bolt",
+			"blurb": "R throws a ball of your own aura at what you are looking at, for a "
+				+ "twentieth of the dantian.",
+		},
+		{
+			"cap": 3.0, "label": "Deep Well", "effect": "deep_well",
+			"blurb": "Qi Pressure costs a third less to hold.",
+		},
+		{
+			"cap": 4.0, "label": "Cloud Step", "effect": "flight",
+			"blurb": "Hold jump in the air and walk on it. It is paid for the whole time.",
+		},
+		{
+			"cap": 8.0, "label": "Jade Skin", "effect": "jade_skin",
+			"blurb": "A shell of qi eats one blow every eighteen seconds, out of the dantian.",
+		},
+	],
+	"body": [
+		{
+			"cap": 2.0, "label": "Thick Skin", "effect": "thick_skin",
+			"blurb": "Blows land eight per cent softer on a body that has been through a few.",
+		},
+		{
+			"cap": 5.0, "label": "Iron Bones", "effect": "iron_bones",
+			"blurb": "You get up twice as fast and do not slide half as far.",
+		},
+	],
+}
+
+## The ones that need *two* stats, which is where a build comes from.
+##
+## A single stat has a rank; two stats together have a discipline. That distinction is the
+## whole point of them: these are the only entries in the game that ask the player to have
+## trained in a *direction* rather than to have trained a lot. A body built on constitution
+## and defence is a wall, one built on health and attack is a berserker, and there is no
+## reason to build either except that you want it. Requirements are again multiples of the
+## base caps.
+const SYNERGIES: Array = [
+	{
+		"id": "iron_skin", "label": "Iron Skin", "effect": "iron_skin",
+		"needs": {"defense": 3.0, "body": 3.0},
+		"blurb": "A trained hide over a trained frame: another twelve per cent off every blow.",
+	},
+	{
+		"id": "sky_step", "label": "Sky Step", "effect": "sky_step",
+		"needs": {"jump": 4.0, "speed": 4.0},
+		"blurb": "One more jump in the air than training alone would allow.",
+	},
+	{
+		"id": "blood_boil", "label": "Blood Boil", "effect": "blood_boil",
+		"needs": {"hp": 3.0, "attack": 3.0},
+		"blurb": "Below a third of your health, your blows land a quarter harder.",
+	},
+	{
+		"id": "dantian_bell", "label": "Dantian Bell", "effect": "dantian_bell",
+		"needs": {"qi": 3.0, "defense": 3.0},
+		"blurb": "A deep well behind a hard wall: the jade shell comes back twice as fast.",
+	},
+]
+
+## How much harder Warded gives a blow back, what a jade shell costs of the pool, and how
+## long each timed attainment takes to come back.
+const WARDED_REFLECT := 0.15
+const JADE_COST_SHARE := 0.12
+const JADE_RECHARGE := 18.0
+const SECOND_WIND_RECHARGE := 90.0
+## The fraction of the pool Blood Boil starts at.
+const BLOOD_BOIL_SHARE := 0.35
+## Seconds a blow has to be absent before wounds close at the mending rate.
+const MENDING_QUIET := 5.0
+
+## The effects in force, by key. Rebuilt when a cap moves rather than read from the tables on
+## every question: the controller, the striker and the pressure field all ask "do I have
+## this" every frame, and walking seven tables to answer it is the kind of cost that never
+## shows up in a profile and never stops either.
+var _attained: Dictionary = {}
+
+## Seconds since the last blow or fall. Mending is the one attainment that is a *state*
+## rather than a modifier: it is about what is not currently happening to you.
+var _since_hurt: float = 0.0
+## Engine milliseconds at which each timed attainment is available again. A deadline rather
+## than a countdown, so nothing has to tick them down.
+var _shield_ready_ms: int = 0
+var _wind_ready_ms: int = 0
+
+
+## Every attainment in the game in one flat list, for the panel that shows them: the two per
+## stat in stat order, then the disciplines. Each row knows whether it is attained and what
+## it is short of when it is not, so the interface never re-derives either.
+func attainment_rows() -> Array:
+	var rows: Array = []
+	for stat_id: String in STAT_ORDER:
+		for entry: Dictionary in ATTAINMENTS.get(stat_id, []):
+			var want: float = threshold(stat_id, entry)
+			var have: float = get_cap(stat_id)
+			rows.append({
+				"kind": "stat",
+				"stat": stat_id,
+				"label": String(entry["label"]),
+				"blurb": String(entry["blurb"]),
+				"color": color(stat_id),
+				"attained": have >= want,
+				"need": "%s %s" % [label(stat_id), format_value(stat_id, want)],
+				"have": "%s %s" % [label(stat_id), format_value(stat_id, have)],
+				"missing": maxf(0.0, want - have),
+			})
+	for entry: Dictionary in SYNERGIES:
+		var met: bool = true
+		var needs: Array = []
+		for stat_id: String in (entry["needs"] as Dictionary):
+			var want: float = threshold(stat_id, {"cap": float(entry["needs"][stat_id])})
+			needs.append("%s %s" % [label(stat_id), format_value(stat_id, want)])
+			if get_cap(stat_id) < want:
+				met = false
+		rows.append({
+			"kind": "synergy",
+			"stat": "",
+			"label": String(entry["label"]),
+			"blurb": String(entry["blurb"]),
+			"color": Color("ffd76e"),
+			"attained": met,
+			"need": ", ".join(needs),
+			"have": "",
+			"missing": 0.0,
+		})
+	return rows
+
+
+func attained_count() -> int:
+	var total: int = 0
+	for row: Dictionary in attainment_rows():
+		if bool(row["attained"]):
+			total += 1
+	return total
+
+
+func attainment_total() -> int:
+	var total: int = 0
+	for stat_id: String in STAT_ORDER:
+		total += (ATTAINMENTS.get(stat_id, []) as Array).size()
+	return total + SYNERGIES.size()
+
+
+## Every effect key any table grants, in table order and once each.
+##
+## Walked out of the tables rather than kept as a second list beside them, because a list of
+## the effects is one more thing that can disagree with the effects — and the only question
+## anyone asks this is "is this key real", which is a question the tables can answer. The
+## suite is the caller: it compares these keys against the ones its checks exercise, so an
+## entry nothing ever fires for cannot hide behind a panel that lists it as held.
+func all_effect_keys() -> Array:
+	var keys: Array = []
+	for stat_id: String in STAT_ORDER:
+		for entry: Dictionary in ATTAINMENTS.get(stat_id, []):
+			var key: String = String(entry["effect"])
+			if not keys.has(key):
+				keys.append(key)
+	for entry: Dictionary in SYNERGIES:
+		var key: String = String(entry["effect"])
+		if not keys.has(key):
+			keys.append(key)
+	return keys
+
+
+## The cap a threshold stands for, in the stat's own units.
+func threshold(stat_id: String, entry: Dictionary) -> float:
+	return maxf(0.001, float(def(stat_id).get("base_cap", 1.0))) * float(entry.get("cap", 0.0))
+
+
+## How many of a stat's thresholds are behind it.
+func attainment_index(stat_id: String) -> int:
+	var count: int = 0
+	for entry: Dictionary in ATTAINMENTS.get(stat_id, []):
+		if get_cap(stat_id) >= threshold(stat_id, entry):
+			count += 1
+	return count
+
+
+## The name of the last thing a stat became, or empty while it is still only a number.
+func attainment_label(stat_id: String) -> String:
+	var passed: int = attainment_index(stat_id)
+	if passed <= 0:
+		return ""
+	return String((ATTAINMENTS[stat_id] as Array)[passed - 1]["label"])
+
+
+## The next thing a stat would become, with the absolute threshold already resolved — so the
+## HUD, the tooltip and the panel all print the same number instead of three arithmetic
+## expressions that agree until one of them is edited. Empty once the table runs out.
+func next_attainment(stat_id: String) -> Dictionary:
+	var list: Array = ATTAINMENTS.get(stat_id, [])
+	var passed: int = attainment_index(stat_id)
+	if passed >= list.size():
+		return {}
+	var entry: Dictionary = list[passed]
+	var want: float = threshold(stat_id, entry)
+	var have: float = get_cap(stat_id)
+	return {
+		"label": String(entry["label"]),
+		"blurb": String(entry["blurb"]),
+		"threshold": want,
+		"missing": maxf(0.0, want - have),
+		"progress": clampf(have / maxf(0.001, want), 0.0, 1.0),
+	}
+
+
+## True when a named effect is in force. The one question the rest of the game asks.
+func has_effect(key: String) -> bool:
+	return _attained.has(key)
+
+
+## Rebuilds the effect set out of the caps, and says so when something new turns up.
+##
+## Connected to the caps themselves rather than to any of the four paths that can move one —
+## training, a breakthrough, a site, the elder's shelf — because a fifth path added later is
+## exactly how a derived table comes to disagree with the thing it is derived from.
+func _recheck_attainments() -> void:
+	var before: Dictionary = _attained
+	var now: Dictionary = {}
+	for stat_id: String in STAT_ORDER:
+		for i in attainment_index(stat_id):
+			now[String((ATTAINMENTS[stat_id] as Array)[i]["effect"])] = true
+	for entry: Dictionary in SYNERGIES:
+		var met: bool = true
+		for stat_id: String in (entry["needs"] as Dictionary):
+			if get_cap(stat_id) < threshold(stat_id, {"cap": float(entry["needs"][stat_id])}):
+				met = false
+				break
+		if met:
+			now[String(entry["effect"])] = true
+	_attained = now
+	for key: String in now:
+		if not before.has(key):
+			_announce_effect(key)
+
+
+## A named thing is announced, and it comes with the line that says what it does. A
+## capability that arrives silently is a capability the player will never know they have —
+## which is the failure mode of every "invisible stat bonus" ever shipped.
+func _announce_effect(key: String) -> void:
+	var stat_id: String = ""
+	var blurb: String = ""
+	var headline: String = ""
+	for id: String in STAT_ORDER:
+		for entry: Dictionary in ATTAINMENTS.get(id, []):
+			if String(entry["effect"]) == key:
+				stat_id = id
+				blurb = String(entry["blurb"])
+				headline = String(entry["label"])
+	var discipline: bool = stat_id == ""
+	if discipline:
+		for entry: Dictionary in SYNERGIES:
+			if String(entry["effect"]) == key:
+				blurb = String(entry["blurb"])
+				headline = String(entry["label"])
+	if headline == "":
+		return
+	log_message.emit(
+		"%s — %s%s" % [
+			headline.to_upper(), blurb,
+			"" if discipline else "  (%s reached it)" % label(stat_id),
+		],
+		"breakthrough"
+	)
+	Audio.play("breakthrough", -3.0)
+
+
+# --------------------------------------------------- the effects, as numbers
+
+## A blow that carries: what fraction of it lands on a second body, and how far that body
+## can be. Zero when the attainment is not held, so the striker multiplies rather than
+## testing tables.
+func cleave_fraction() -> float:
+	return 0.4 if has_effect("cleave") else 0.0
+
+
+func cleave_radius() -> float:
+	return 2.2
+
+
+## Chance that any one blow lands crushing.
+func crush_chance() -> float:
+	return 0.2 if has_effect("crush") else 0.0
+
+
+## The multiplier on damage taken from a body. DEFENSE's own curve is applied by the caller,
+## because this is the part that changes and that one does not.
+func melee_multiplier() -> float:
+	var out: float = 1.0
+	if has_effect("thick_skin"):
+		out *= 0.92
+	if has_effect("iron_skin"):
+		out *= 0.88
+	return out
+
+
+## How far a blow throws the body. Zero once a body has stopped being moved by hands.
+func knockback_multiplier() -> float:
+	var out: float = 1.0
+	if has_effect("unshaken"):
+		out = 0.0
+	if has_effect("iron_bones"):
+		out *= 0.5
+	return out
+
+
+## Health per second as a multiple of the plain rule. Mending only applies while nothing has
+## hit you for a few seconds, which is what makes it a reward for leaving a fight rather
+## than a reason to stand still inside one.
+func regen_multiplier() -> float:
+	return 3.0 if has_effect("mending") and _since_hurt >= MENDING_QUIET else 1.0
+
+
+## What the rate would be if the quiet had been earned. For the panel, which has to be able
+## to say what the attainment is worth without waiting five seconds to be hit less.
+func repair_multiplier() -> float:
+	return 3.0 if has_effect("mending") else 1.0
+
+
+func seconds_since_hurt() -> float:
+	return _since_hurt
+
+
+## The damage a blow is dealt as a multiple of the plain rule. Blood Boil reads the pool
+## rather than a flag: it is the one attainment that is switched on by being hurt.
+func damage_multiplier_now() -> float:
+	if not has_effect("blood_boil"):
+		return 1.0
+	var cap: float = get_cap("hp")
+	if cap <= 0.0:
+		return 1.0
+	return 1.25 if get_value("hp") / cap <= BLOOD_BOIL_SHARE else 1.0
+
+
+func fall_multiplier() -> float:
+	return 0.5 if has_effect("softfoot") else 1.0
+
+
+func safe_fall_bonus() -> float:
+	return 2.0 if has_effect("softfoot") else 0.0
+
+
+## The multiplier on the run. Surefoot is why the number beside SPEED is not quite the speed
+## the body moves at: the training is the training, and this is what the body does with it.
+func speed_multiplier() -> float:
+	return 1.08 if has_effect("surefoot") else 1.0
+
+
+func climb_bonus_degrees() -> float:
+	return 15.0 if has_effect("surefoot") else 0.0
+
+
+func sprint_burst_multiplier() -> float:
+	return 1.3 if has_effect("burst") else 1.0
+
+
+func sprint_burst_seconds() -> float:
+	return 0.75 if has_effect("burst") else 0.0
+
+
+## What the qi pressure costs, as a multiple of the plain drain.
+func pressure_multiplier() -> float:
+	return 0.65 if has_effect("deep_well") else 1.0
+
+
+## The jade shell: whether it is up, what raising it costs, and how long until it returns.
+func shield_ready() -> bool:
+	return has_effect("jade_skin") and Time.get_ticks_msec() >= _shield_ready_ms
+
+
+func shield_cost() -> float:
+	return get_cap("qi") * JADE_COST_SHARE
+
+
+func shield_recharge_seconds() -> float:
+	return JADE_RECHARGE * (0.5 if has_effect("dantian_bell") else 1.0)
+
+
+func second_wind_ready() -> bool:
+	return has_effect("second_wind") and Time.get_ticks_msec() >= _wind_ready_ms
+
+
+## One more jump in the air than the training alone allows. Added here rather than in the
+## controller so the ability ceiling and its bonus sit in the same file as the table that
+## grants it — and so `air_jumps()` stays the single answer to "how many jumps do I have".
+func air_jump_bonus() -> int:
+	return 1 if has_effect("sky_step") else 0
+
+
+## A soft landing: the fall that shakes the ground, and how far the shake reaches.
+func stagger_radius() -> float:
+	return 3.5 if has_effect("meteor") else 0.0
+
+
+func stagger_min_fall() -> float:
+	return 6.0
+
+
+## How long a collapsed body stays down, as a multiple of the plain rule.
+func downed_multiplier() -> float:
+	return 0.5 if has_effect("iron_bones") else 1.0
+
+
+func reflect_fraction() -> float:
+	return WARDED_REFLECT if has_effect("warded") else 0.0
+
+
+## A blow as it actually lands, the crushing roll included. The striker asks for this rather
+## than for `strike_damage` so the roll lives next to the table that grants it — and so the
+## suite can measure a mean over a thousand swings instead of hoping to see a crit.
+func strike_damage_rolled(rng: RandomNumberGenerator) -> float:
+	var base: float = strike_damage(rng.randf_range(0.85, 1.15)) * damage_multiplier_now()
+	if crush_chance() > 0.0 and rng.randf() < crush_chance():
+		return base * 2.0
+	return base
+
 
 func get_cap(stat_id: String) -> float:
 	if not stats.has(stat_id):
@@ -518,6 +1042,32 @@ func at_ceiling(stat_id: String) -> bool:
 	return get_cap(stat_id) >= cap_ceiling(stat_id)
 
 
+## Raises a stat's earned cap from somewhere other than training — a site you found, or
+## something bought with crystals. Returns what it actually granted, which is not the
+## amount asked for when the stat is already at its ceiling, so a caller cannot report a
+## gift that was silently refused.
+func grant_cap(stat_id: String, amount: float) -> float:
+	if amount <= 0.0 or not stats.has(stat_id):
+		return 0.0
+	var before: float = get_cap(stat_id)
+	_grow_cap(stat_id, amount)
+	_dirty = true
+	return get_cap(stat_id) - before
+
+
+## Sites already found, by id. A list rather than a counter: a counter would pay out the
+## wrong sites the first time the list of sites changes, which is exactly the sort of
+## thing a save file is not allowed to get wrong.
+var found_landmarks: Array = []
+
+
+func mark_landmark_found(id: String) -> void:
+	if id == "" or found_landmarks.has(id):
+		return
+	found_landmarks.append(id)
+	_dirty = true
+
+
 func _allocated_set(stat_id: String, value: float) -> void:
 	var clamped: float = clampf(value, 0.0, get_cap(stat_id))
 	allocated[stat_id] = clamped
@@ -574,13 +1124,46 @@ func strike_damage(skill: float = 1.0) -> float:
 
 ## Applies raw damage, grants the HP/DEFENSE training xp that comes from getting
 ## hit, and returns the damage that actually landed.
-func apply_damage(raw: float) -> float:
+## `kind` is "blow" for anything a body did to you and "fall" for the ground. The
+## distinction is not flavour: the physical attainments are about being *struck*, and a
+## trained hide does not help against a cliff.
+func apply_damage(raw: float, kind: String = "blow") -> float:
 	if raw <= 0.0:
 		return 0.0
+	_since_hurt = 0.0
+	var melee: bool = kind == "blow"
+	# The jade shell, before anything else: a blow it takes is a blow that did not land, so
+	# it grants no HP or DEFENSE training either — the shell is what a cultivator spends qi
+	# *instead* of blood.
+	if melee and shield_ready():
+		var price: float = shield_cost()
+		if get_value("qi") >= price:
+			spend("qi", price)
+			_shield_ready_ms = Time.get_ticks_msec() + int(shield_recharge_seconds() * 1000.0)
+			log_message.emit(
+				"The jade shell takes it. Back in %.0fs." % shield_recharge_seconds(), "info"
+		)
+			Audio.play("ui_toggle", -6.0, 0.8)
+			return 0.0
 	var dealt: float = raw * damage_multiplier()
+	if melee:
+		dealt *= melee_multiplier()
 	var entry: Dictionary = stats["hp"]
 	entry["current"] = maxf(0.0, float(entry["current"]) - dealt)
 	var lethal: bool = float(entry["current"]) <= 0.0
+	# Second Wind, on the blow that would have ended it. Checked before the training below,
+	# because a body that is going to get up is a body that did not go down.
+	if lethal and second_wind_ready():
+		entry["current"] = float(entry["cap"]) * 0.25
+		_wind_ready_ms = Time.get_ticks_msec() + int(SECOND_WIND_RECHARGE * 1000.0)
+		log_message.emit(
+			"SECOND WIND — you are still standing, at a quarter. Once every %.0fs."
+			% SECOND_WIND_RECHARGE,
+			"breakthrough"
+		)
+		Audio.play("breakthrough", -3.0)
+		stats_changed.emit()
+		return dealt
 	gain("hp", dealt * 2.0)
 	gain("defense", dealt * 0.5)
 	# Training your endurance must not undo the very blow that trained it. A big
@@ -683,8 +1266,11 @@ func unlock_ability(id: String, value: Variant = true) -> void:
 	ability_unlocked.emit(id)
 
 
+## Jumps allowed after leaving the ground: what the elder's chain and the shelf have granted,
+## plus whatever a discipline adds on top. One answer to the question, so the controller, the
+## HUD and the settings panel cannot disagree about how many jumps the body has.
 func air_jumps() -> int:
-	return int(abilities.get("air_jumps", 0))
+	return int(abilities.get("air_jumps", 0)) + air_jump_bonus()
 
 
 func dash_cooldown() -> float:
@@ -704,6 +1290,48 @@ func set_ui_scale(value: float) -> void:
 ## (crystals, ability unlocks, task progress) calls this so autosave notices.
 func mark_dirty() -> void:
 	_dirty = true
+
+
+# ------------------------------------------------------------------- decisions
+
+## What the body has decided: decision id -> `{"key": the option taken, "subject": what it
+## was about, or ""}`.
+##
+## Kept here rather than in the file that writes the conversations, because it is the one
+## kind of state that must never be recomputed: a decision is not derived from anything, so
+## nothing can rebuild it, and a save that loses it silently reopens a door the player
+## walked through. The story autoload reads and writes it; this file only remembers it.
+##
+## The subject is what lets a decision be re-applied to a world that is rebuilt from scratch
+## every launch: "burn" says nothing on its own, and "burn Bandit Hollow" is a fact the
+## camps can act on before the first frame.
+var decisions: Dictionary = {}
+
+
+## Records a decision. Written before its effect is applied, so a decision whose effect
+## cannot be given is still a decision rather than a conversation that repeats forever.
+func note_decision(id: String, key: String, subject: String = "") -> void:
+	if id == "" or key == "":
+		return
+	decisions[id] = {"key": key, "subject": subject}
+	_dirty = true
+
+
+## The option taken on a decision, or "" while it is still open.
+func chosen_option(id: String) -> String:
+	var entry: Variant = decisions.get(id, {})
+	if typeof(entry) == TYPE_DICTIONARY:
+		return String((entry as Dictionary).get("key", ""))
+	# Written before decisions carried a subject; a plain string is a valid answer.
+	return String(entry)
+
+
+## What the decision was about, or "". Used by the world to re-apply it to a fresh one.
+func decision_subject(id: String) -> String:
+	var entry: Variant = decisions.get(id, {})
+	if typeof(entry) == TYPE_DICTIONARY:
+		return String((entry as Dictionary).get("subject", ""))
+	return ""
 
 
 func world_position() -> Vector3:
@@ -728,6 +1356,8 @@ func save_game() -> bool:
 		"crystals": crystals,
 		"abilities": abilities,
 		"ui_scale": ui_scale,
+		"landmarks": found_landmarks,
+		"decisions": decisions,
 		"cultivation": {},
 	}
 	var cultivation: Node = get_node_or_null("/root/Cultivation")
@@ -736,6 +1366,12 @@ func save_game() -> bool:
 	var quests: Node = get_node_or_null("/root/Quests")
 	if quests != null and quests.has_method("save_data"):
 		payload["quests"] = quests.call("save_data")
+	var shop: Node = get_node_or_null("/root/Shop")
+	if shop != null and shop.has_method("save_data"):
+		payload["shop"] = shop.call("save_data")
+	var wards: Node = get_node_or_null("/root/Wards")
+	if wards != null and wards.has_method("save_data"):
+		payload["wards"] = wards.call("save_data")
 
 	var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if file == null:
@@ -799,6 +1435,23 @@ func load_game() -> bool:
 
 	chosen_aura = String(data.get("aura", ""))
 	crystals = maxi(0, int(data.get("crystals", 0)))
+	decisions.clear()
+	var saved_decisions: Variant = data.get("decisions", {})
+	if typeof(saved_decisions) == TYPE_DICTIONARY:
+		for id: String in (saved_decisions as Dictionary):
+			var value: Variant = (saved_decisions as Dictionary)[id]
+			if typeof(value) == TYPE_DICTIONARY:
+				decisions[id] = {
+					"key": String((value as Dictionary).get("key", "")),
+					"subject": String((value as Dictionary).get("subject", "")),
+				}
+			else:
+				decisions[id] = {"key": String(value), "subject": ""}
+	found_landmarks.clear()
+	var saved_landmarks: Variant = data.get("landmarks", [])
+	if typeof(saved_landmarks) == TYPE_ARRAY:
+		for entry: Variant in saved_landmarks:
+			found_landmarks.append(String(entry))
 
 	# Merged over the defaults rather than replaced: a save written before a new
 	# unlock existed simply does not mention it, and a missing key has to keep its
@@ -818,6 +1471,16 @@ func load_game() -> bool:
 	if typeof(saved_quests) == TYPE_DICTIONARY:
 		_loaded_quests = saved_quests
 	_quests_consumed = false
+
+	var saved_shop: Variant = data.get("shop", {})
+	if typeof(saved_shop) == TYPE_DICTIONARY:
+		_loaded_shop = saved_shop
+	_shop_consumed = false
+
+	var saved_wards: Variant = data.get("wards", {})
+	if typeof(saved_wards) == TYPE_DICTIONARY:
+		_loaded_wards = saved_wards
+	_wards_consumed = false
 	stats_changed.emit()
 	return true
 
@@ -841,6 +1504,25 @@ func take_loaded_quests() -> Dictionary:
 	return _loaded_quests
 
 
+## And again for the shop's purchase counts — a save that forgets them hands out the
+## first rank of every ware at the starting price all over again.
+func take_loaded_shop() -> Dictionary:
+	if _shop_consumed:
+		return {}
+	_shop_consumed = true
+	return _loaded_shop
+
+
+## And the wards: a save that forgets which walls were crossed would put the player back
+## inside a ward their realm says is open, which is the one piece of progress that costs
+## real minutes to re-earn.
+func take_loaded_wards() -> Dictionary:
+	if _wards_consumed:
+		return {}
+	_wards_consumed = true
+	return _loaded_wards
+
+
 ## Wipes progression and deletes the save. Bound to a button in the HUD so the
 ## loop can be replayed from scratch.
 func reset_progress() -> void:
@@ -852,6 +1534,10 @@ func reset_progress() -> void:
 	ui_scale = 0.85
 	_loaded_quests = {}
 	_quests_consumed = true
+	_loaded_shop = {}
+	_shop_consumed = true
+	_loaded_wards = {}
+	_wards_consumed = true
 	_loaded_cultivation = {}
 	_cultivation_consumed = true
 	has_saved_position = false
@@ -869,6 +1555,12 @@ func reset_progress() -> void:
 	var quests: Node = get_node_or_null("/root/Quests")
 	if quests != null and quests.has_method("reset"):
 		quests.call("reset")
+	var shop: Node = get_node_or_null("/root/Shop")
+	if shop != null and shop.has_method("reset"):
+		shop.call("reset")
+	var wards: Node = get_node_or_null("/root/Wards")
+	if wards != null and wards.has_method("reset"):
+		wards.call("reset")
 	crystals_changed.emit(0)
 	stats_changed.emit()
 	log_message.emit("Progression wiped. A new cultivator awakens.", "info")

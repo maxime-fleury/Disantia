@@ -24,6 +24,7 @@ var _camps: Node
 var _safe: Node3D
 var _player: Node3D
 var _elder: Node3D
+var _landmarks: Node
 
 ## Colours, in one place so the map and its legend agree.
 ##
@@ -42,6 +43,11 @@ const COL_PLAYER := Color("fff3cf")
 ## so the thing that hands out tasks is recognisable without reading the legend.
 const COL_ELDER := Color("ffd76e")
 const COL_UNLOCKED := Color(1, 1, 1, 1)
+## A site you have found wears the same green as the ring it leaves on the ground where
+## the beacon was, so the mark on the map and the thing under your feet are one object.
+const COL_FOUND := Color("cfe8b8")
+## A champion, when the camp it holds has no colour of its own to wear.
+const COL_CHAMPION := Color("ff9d5c")
 ## A zone you have not reached the stage for still has to be on the map — knowing
 ## something is out there and out of reach is the reason to keep cultivating.
 const LOCKED_ALPHA := 0.42
@@ -87,6 +93,7 @@ func _resolve() -> void:
 	if _player == null:
 		_player = get_tree().get_first_node_in_group("player") as Node3D
 	_elder = get_tree().get_first_node_in_group("quest_npc") as Node3D
+	_landmarks = world.get_node_or_null("Landmarks")
 
 
 func _process(delta: float) -> void:
@@ -119,8 +126,9 @@ func _draw() -> void:
 	# out would report a size of zero, which is the failure worth reporting.
 	if not _reported:
 		_reported = true
-		print("[minimap] %.0f px canvas, %d zones, %d camps, ground from the terrain map" % [
-			size.x, _zone_count(), _camp_count()])
+		print("[minimap] %.0f px canvas, %d zones, %d camps, %d/%d sites found, %s, ground from the terrain map" % [
+			size.x, _zone_count(), _camp_count(), landmark_counts().x, landmark_counts().y,
+			Wards.summary()])
 	if _terrain == null:
 		_resolve()
 	if size.x < 8.0 or size.y < 8.0:
@@ -134,8 +142,10 @@ func _draw() -> void:
 		draw_texture_rect(ground, Rect2(Vector2.ZERO, Vector2(side, side)), false,
 			Color(1.0, 1.0, 1.0, GROUND_ALPHA))
 	_draw_safe_zone()
+	_draw_wards()
 	_draw_zones()
 	_draw_camps()
+	_draw_landmarks()
 	_draw_elder()
 	_draw_player()
 	_draw_compass()
@@ -152,6 +162,29 @@ func _ground() -> Texture2D:
 			return null
 		_ground_texture = ImageTexture.create_from_image(image)
 	return _ground_texture
+
+
+## The wards you cannot pass, and the ones you have.
+##
+## This is the single most useful thing the map says now that the world is concentric, and
+## it says it with one colour per wall rather than a label: an unbroken bright circle is a
+## barrier, and the same circle drawn faint is a wall that is down. A legend row names the
+## colour, so the map does not have to spell it out three times around the edge.
+##
+## Drawn under everything else, so a zone or a champion standing behind a wall is still
+## visible through it — the wall is the structure, not the content.
+func _draw_wards() -> void:
+	var scale: float = _px_per_metre()
+	if scale <= 0.0:
+		return
+	var centre: Vector2 = _to_map(Vector2.ZERO)
+	for i in Wards.gate_count():
+		var gate: Dictionary = Wards.GATES[i]
+		var tint: Color = gate.get("color", Color("6ec8ff"))
+		var locked: bool = i >= Wards.passed() and not Wards.is_open(i)
+		var alpha: float = 0.62 if locked else 0.22
+		draw_arc(centre, scale * Wards.radius_of(i), 0.0, TAU, 96,
+			Color(tint, alpha), 1.8 if locked else 1.0, true)
 
 
 ## The wards, as a circle. Drawn before the zones so a spirit zone near the camp is not
@@ -194,6 +227,55 @@ func _draw_camps() -> void:
 		# glance without needing a legend.
 		draw_arc(centre, 4.5, 0.0, TAU, 20, Color(COL_CAMP, 0.8), 1.4, true)
 		draw_circle(centre, 2.0, COL_CAMP)
+		var warden: String = String(camp.get("warden", ""))
+		if warden == "":
+			continue
+		# A champion wears the colour of the wall it stands behind, and a felled one is
+		# drawn hollow: the map is the record of what is left to do, and a mark that stayed
+		# solid after the fight was won would be a lie you would walk across the map to find.
+		var tint: Color = camp.get("colour", COL_CHAMPION)
+		var down: bool = Wards.warden_down(warden)
+		if down:
+			draw_polyline(_diamond_points(centre, 5.4, 7.6), Color(tint, 0.45), 1.2)
+		else:
+			_draw_diamond(centre, 5.4, 7.6, tint)
+
+
+## Sites you have found, and nothing else.
+##
+## Undiscovered sites are deliberately absent. Each one already stands in the world under
+## a pillar of light you can see from high ground — that is the call, and a walk to a
+## beacon is an adventure. Drawing all nine on the map instead would turn each of them into
+## a coordinate to walk to, which is the same information with the exploring taken out.
+##
+## What the map does say is how many there are, in the legend: a count is the one honest
+## hint, because it tells the player there is more out there without telling them where.
+func _draw_landmarks() -> void:
+	if _landmarks == null or not _landmarks.has_method("sites"):
+		return
+	for site: Dictionary in _landmarks.call("sites"):
+		if not bool(site.get("discovered", false)):
+			continue
+		var at: Vector3 = site["position"]
+		var centre: Vector2 = _to_map(Vector2(at.x, at.z))
+		# A square: the only shape on this map that is neither a ring, a dot nor an arrow.
+		draw_rect(Rect2(centre - Vector2(2.4, 2.4), Vector2(4.8, 4.8)), COL_FOUND, true)
+		draw_rect(Rect2(centre - Vector2(3.8, 3.8), Vector2(7.6, 7.6)),
+			Color(COL_FOUND, 0.5), false, 1.0)
+
+
+## How many sites have been found, and how many there are. Public for the legend and for
+## the boot line.
+func landmark_counts() -> Vector2i:
+	if _landmarks == null or not _landmarks.has_method("sites"):
+		return Vector2i.ZERO
+	var found: int = 0
+	var total: int = 0
+	for site: Dictionary in _landmarks.call("sites"):
+		total += 1
+		if bool(site.get("discovered", false)):
+			found += 1
+	return Vector2i(found, total)
 
 
 ## The elder, as a diamond, and the one mark on this map that moves on its own.
@@ -228,15 +310,17 @@ func elder_reward_waiting() -> bool:
 
 ## A diamond, the one shape on the map that is neither a ring nor an arrow.
 func _draw_diamond(centre: Vector2, half_w: float, half_h: float, tint: Color) -> void:
-	draw_colored_polygon(PackedVector2Array([
-		centre + Vector2(0.0, -half_h), centre + Vector2(half_w, 0.0),
-		centre + Vector2(0.0, half_h), centre + Vector2(-half_w, 0.0),
-	]), tint)
-	draw_polyline(PackedVector2Array([
+	draw_colored_polygon(_diamond_points(centre, half_w, half_h), tint)
+	draw_polyline(_diamond_points(centre, half_w, half_h),
+		Color(0.05, 0.05, 0.07, 0.9), 1.0)
+
+
+func _diamond_points(centre: Vector2, half_w: float, half_h: float) -> PackedVector2Array:
+	return PackedVector2Array([
 		centre + Vector2(0.0, -half_h), centre + Vector2(half_w, 0.0),
 		centre + Vector2(0.0, half_h), centre + Vector2(-half_w, 0.0),
 		centre + Vector2(0.0, -half_h),
-	]), Color(0.05, 0.05, 0.07, 0.9), 1.0)
+	])
 
 
 func _draw_player() -> void:
@@ -307,12 +391,33 @@ func _px_per_metre() -> float:
 ## with room for it.
 func legend() -> Array:
 	var elder_note: String = "a reward is waiting" if elder_reward_waiting() else ""
-	return [
+	var counts: Vector2i = landmark_counts()
+	var site_note: String = ""
+	if counts.y > 0:
+		site_note = "%d of %d found" % [counts.x, counts.y]
+	var rows: Array = [
 		{"color": COL_PLAYER, "text": "You", "note": ""},
 		{"color": COL_SAFE, "text": "Camp wards", "note": ""},
 		{"color": COL_CAMP, "text": "Raider camp", "note": ""},
 		{"color": COL_ELDER, "text": "The elder", "note": elder_note},
+		{"color": COL_FOUND, "text": "Site you found", "note": site_note},
 	]
+	# The wards, one row per gate, and the one you are working towards is the bright one.
+	# Named with the realm that opens it, because that is the entire question the wall poses.
+	for i in Wards.gate_count():
+		var gate: Dictionary = Wards.GATES[i]
+		var locked: bool = i >= Wards.passed() and not Wards.is_open(i)
+		rows.append({
+			"color": gate.get("color", COL_SAFE) if locked else Color(0.55, 0.6, 0.66),
+			"text": String(gate["name"]),
+			"note": ("needs %s" % Wards.realm_label_of(i)) if locked else "open",
+		})
+	var felled: int = Wards.felled_count()
+	rows.append({
+		"color": COL_CHAMPION, "text": "Champion",
+		"note": "%d of %d felled" % [felled, Wards.warden_count()],
+	})
+	return rows
 
 
 ## The spirit zones in placement order, for the HUD's legend row.

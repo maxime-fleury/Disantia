@@ -120,8 +120,14 @@ func _find_animation_player(node: Node) -> Node:
 	return null
 
 
+## The clips this person needs. A villager that walks asks for its walk as well; the elder
+## stands by his fire and needs nothing else.
+func wanted_clips() -> Array:
+	return ["Idle"]
+
+
 func _resolve_clips() -> void:
-	for wanted: String in ["Idle"]:
+	for wanted: String in wanted_clips():
 		var found: String = ""
 		for name in _anim.get_animation_list():
 			if String(name) == wanted or String(name).get_basename() == wanted:
@@ -228,8 +234,12 @@ func interact() -> Dictionary:
 	var task: Dictionary = Quests.current()
 	if task.is_empty():
 		PlayerData.log_message.emit(
-			"%s: \"You have done everything I know how to teach.\"" % npc_name, "info"
+			"%s: \"You have done everything I know how to teach. The shelf is yours.\""
+				% npc_name, "info"
 		)
+		# The panel opens whether or not there is a task left, because the shelf below
+		# it is the other half of the conversation and it outlives the chain.
+		_open_task_panel()
 		return {}
 	PlayerData.log_message.emit(
 		"%s: \"%s\"" % [npc_name, Quests.describe(task)], "info"

@@ -26,6 +26,14 @@ func _initialize() -> void:
 	_apply("autoload/Training", "*res://scripts/autoload/training.gd")
 	_apply("autoload/Audio", "*res://scripts/autoload/audio.gd")
 	_apply("autoload/Quests", "*res://scripts/autoload/quests.gd")
+	_apply("autoload/Shop", "*res://scripts/autoload/shop.gd")
+	# Wards sits with the other progression autoloads: it reads its own slice of the save
+	# out of PlayerData during its _ready, so it only has to come after that one.
+	_apply("autoload/Wards", "*res://scripts/autoload/wards.gd")
+	# Story holds the people and the decisions, which live in PlayerData's save. No node
+	# reads it during their _ready except the crowd, which is in the world rather than an
+	# autoload and so cannot run before any of this.
+	_apply("autoload/Story", "*res://scripts/autoload/story.gd")
 	_apply("autoload/SelfTest", "*res://tests/self_test.gd")
 
 	_apply("display/window/size/viewport_width", 1280)
@@ -80,9 +88,15 @@ func _initialize() -> void:
 	# movement hand for the same reason the drill keys are: it is held for seconds at a
 	# time while running, so it cannot share a finger with WASD or with the dash.
 	_move_action("qi_pressure", [ KEY_X ], false)
-	_move_action("settings", [ KEY_TAB ], false)
-	# Folds the stat readout away. Off the movement keys on purpose: it is a
+	_move_action("settings", [ KEY_TAB ], false)	# Folds the stat readout away. Off the movement keys on purpose: it is a
 	# housekeeping key, not something the hands need while running.
+	# Returning to the fire. Held rather than tapped, because the one thing a teleport
+	# must not be is an escape: attuning takes two seconds and a blow interrupts it, so
+	# it moves you between places rather than out of trouble. It is the hub-and-spoke key
+	# — the elder, the shop and the training posts all stand on the home plateau, and a
+	# world that grows outward in rings needs a way back to the middle that is cheaper
+	# than walking it.
+	_move_action("recall", [ KEY_T ], false)
 	_move_action("toggle_stats", [ KEY_V ], false)
 	# The old R "ascend" teleport is gone. It was a placeholder for travel before
 	# there were roads to walk, and a key that silently moves you somewhere else on
@@ -90,6 +104,9 @@ func _initialize() -> void:
 	# action is deleted from the map as well as unbound, so nothing can read it.
 	if InputMap.has_action("ascend"):
 		InputMap.erase_action("ascend")
+	# R is the free one: it used to be "ascend", which was removed rather than rebound, so the
+	# throw gets it without taking a key away from anything.
+	_move_action("throw", [KEY_R], true)
 	ProjectSettings.set_setting("input/ascend", null)
 
 	var err: Error = ProjectSettings.save()

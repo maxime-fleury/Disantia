@@ -27,12 +27,21 @@ var _pending_timer: float = 0.0
 var _swings: int = 0
 var _hits: int = 0
 var _knockouts: int = 0
+## The blow's own dice: the angle, whether it crushes. Seeded from the clock at startup and
+## kept, rather than a fresh generator per swing — a generator built once per frame in a
+## tight loop is the sort of thing that quietly costs more than the thing it is measuring.
+var _rng := RandomNumberGenerator.new()
+
+
+func _ready_roll() -> void:
+	_rng.randomize()
 
 
 func _ready() -> void:
 	_player = get_parent() as CharacterBody3D
 	if _player != null:
 		_animator = _player.get_node_or_null("Model")
+	_ready_roll()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -91,8 +100,12 @@ func attempt() -> bool:
 func _land(target: Node3D) -> void:
 	if not is_instance_valid(target):
 		return
-	var damage: float = PlayerData.strike_damage(randf_range(0.85, 1.15))
+	# The blow, with the crushing roll inside it. Asked of the body rather than worked out
+	# here, because the roll belongs to the attainment that grants it — and because a mean over
+	# a thousand swings is the only honest way to test a one-in-five chance.
+	var damage: float = PlayerData.strike_damage_rolled(_rng)
 	var dealt: float = float(target.call("take_hit", damage, global_position))
+	_cleave(target, damage)
 	if dealt <= 0.0:
 		Audio.play_at("ui_click", target.global_position, -10.0, 0.6)
 		return
@@ -112,6 +125,45 @@ func _land(target: Node3D) -> void:
 			],
 			"gain"
 		)
+
+
+## Cleave: a blow that carries into a second body.
+##
+## The strongest thing a fist learns, and deliberately the *first* threshold rather than the
+## last, because what it changes is not a number — it is which fights are worth taking. One
+## raider at a time is a duel that the retreat rule makes safe; two standing close enough is
+## suddenly a reason to walk into the middle of a camp, and the player who has Cleave reads
+## every camp on the map differently from the player who does not.
+##
+## The second body is chosen as the nearest *other* thing in reach, measured flat like every
+## other distance in a fight. A post is a legitimate carrier too: whatever the first blow
+## landed on, the second one is picked by distance alone.
+func _cleave(first: Node3D, damage: float) -> void:
+	var fraction: float = PlayerData.cleave_fraction()
+	if fraction <= 0.0:
+		return
+	var radius: float = PlayerData.cleave_radius()
+	var here: Vector2 = Vector2(first.global_position.x, first.global_position.z)
+	var best: Node3D
+	var best_distance: float = radius
+	for group: String in ["enemy", "training_post"]:
+		for node in get_tree().get_nodes_in_group(group):
+			var other := node as Node3D
+			if other == null or not is_instance_valid(other) or other == first:
+				continue
+			if _is_defeated(other):
+				continue
+			var flat: Vector2 = Vector2(other.global_position.x, other.global_position.z)
+			var distance: float = here.distance_to(flat)
+			if distance <= best_distance:
+				best_distance = distance
+				best = other
+	if best == null:
+		return
+	var carried: float = float(best.call("take_hit", damage * fraction, global_position))
+	if carried <= 0.0:
+		return
+	PlayerData.gain("attack", carried * xp_per_damage)
 
 
 ## A target is finished either way it can be: a post when its stuffing runs out, a

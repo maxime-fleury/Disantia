@@ -88,6 +88,17 @@ signal struck(amount: float)
 @export var speed_xp_per_meter: float = 1.0
 @export var jump_xp_per_jump: float = 1.0
 ## How often the player's position is written into PlayerData for autosave.
+@export_group("Wayfaring")
+## Seconds of unbroken stillness before the body lets go of the ground and returns to the
+## fire.
+##
+## Held rather than tapped, and a blow breaks it. That is the whole cost of the technique:
+## a tap would be an escape from any fight in the game — the one thing every other system
+## here is built to deny — while two seconds of standing still is a decision you make
+## somewhere quiet. It is also why there is no cooldown: the cooldown is the fight you
+## cannot be in while you do it.
+@export var recall_seconds: float = 2.0
+
 @export var position_save_seconds: float = 3.0
 
 var _gravity: float = 9.8
@@ -105,9 +116,50 @@ var _dash_timer: float = 0.0
 var _dash_cooldown: float = 0.0
 var _dash_dir: Vector3 = Vector3.ZERO
 var _air_jumps_used: int = 0
+var _recall_progress: float = 0.0
+## Set by a blow, and cleared only when the key is let go. Without this the blow would reset
+## the meter and the hand still holding the key would refill it from the next frame — so being
+## hit would cost a tenth of a second, and a technique that cannot survive one blow is not a
+## technique, it is a race. The block is what makes the interruption *mean* something: the
+## attempt is spent, and the next one is a fresh decision.
+var _recall_blocked: bool = false
+## Seconds left of a sprint's launch, refilled when a run starts from standing still, and
+## whether a run was already underway on the previous frame.
+var _burst_timer: float = 0.0
+var _was_running: bool = false
+var _bolt_cooldown: float = 0.0
+var _flying: bool = false
 
 ## Each physical drill, with the key that holds it. Shared with the HUD so the
 ## panel and the input cannot drift apart.
+const BoltScript := preload("res://scripts/enemy/qi_bolt.gd")
+
+## Seconds between throws.
+const BOLT_COOLDOWN := 0.55
+## What a throw costs, as a share of the dantian. A share rather than a flat number, so the
+## count you can throw in one breath grows with the pool you trained — the same rule the
+## pressure field runs on.
+const BOLT_COST_SHARE := 0.05
+## A bolt is thrown at a fraction of the weight of a fist: it reaches thirty metres, and it
+## should not also out-damage closing the distance.
+const BOLT_DAMAGE_FACTOR := 0.55
+const BOLT_SPEED := 26.0
+## What a second of Cloud Step costs, as a share of the pool. Well above the passive regen
+## (five per cent), which is the number that matters: at six per cent the technique would be
+## free the moment you unlocked it — a permanent hover with a rounding-error bill — and the
+## first flight over a raider camp would be the last interesting decision about it. At nine,
+## the net bleed is four per cent of the pool per second whatever its depth: twenty-five
+## seconds in the air from a full dantian, whether that dantian is two hundred or two
+## thousand. The cost scales with the pool, so the *answer* does not change as you grow.
+const FLIGHT_DRAIN_SHARE := 0.09
+const FLIGHT_RISE := 5.2
+const FLIGHT_ACCEL := 15.0
+## Nine metres. High enough to clear the trees, the roofs and the walls of the camp and read as
+## *flight*, and low enough to stay under the seventeen-metre ward fences — a power that let a
+## body step over those would sell the whole path of rings, three champions and four spirit
+## zones for nothing.
+const FLIGHT_CEILING := 9.0
+
 const DRILLS: Array = [
 	["train_pushups", "pushups"],
 	["train_squats", "squats"],
@@ -136,7 +188,11 @@ func _ready() -> void:
 	floor_snap_length = maxf(0.0, ground_snap_length)
 	floor_block_on_wall = not slide_along_walls
 	floor_constant_speed = constant_speed_on_slopes
-	floor_max_angle = deg_to_rad(clampf(climbable_degrees, 5.0, 85.0))
+	_apply_climb_limit()
+	# Surefoot arrives at a threshold like everything else, which means it can arrive *after*
+	# this body has been standing on a hillside for ten minutes. The limit is therefore
+	# re-applied when a cap moves rather than only here.
+	PlayerData.stat_cap_gained.connect(_on_cap_moved)
 	safe_margin = maxf(0.001, collision_margin)
 	_prepare_glow()
 	_restore_position()
@@ -202,12 +258,21 @@ func _physics_process(delta: float) -> void:
 	# to read movement input: in each of them the body is busy being something
 	# other than a pair of legs. The trance is released with C, a drill with its
 	# own key, and a collapse on its own timer.
-	var rooted: bool = Cultivation.meditating or _downed or Training.is_training()
+	# A conversation roots the body for the same reason a trance does: the panel is at the foot
+	# of the screen and the person talking to you is standing there, and a player who can walk
+	# out of the middle of a sentence has not been *given* the sentence. The pause in the HUD
+	# would already stop this, but the root is what makes it true of the body rather than of the
+	# clock.
+	var rooted: bool = (Cultivation.meditating or _downed or Training.is_training()
+		or Story.talking())
 	var want_dir := Vector3.ZERO
 	if not rooted:
 		want_dir = _wish_direction()
 
 	_running = Input.is_action_pressed("sprint") and not rooted
+	if _running and not _was_running and Vector2(velocity.x, velocity.z).length() < 1.0:
+		_burst_timer = PlayerData.sprint_burst_seconds()
+	_was_running = _running
 
 	if rooted:
 		# Rooted in place: keep a little downward push so floor snapping holds on
@@ -217,12 +282,17 @@ func _physics_process(delta: float) -> void:
 		velocity.y = minf(velocity.y, -1.0)
 	else:
 		_apply_horizontal(delta, want_dir)
-		if not is_on_floor():
+		_update_flight(delta, rooted)
+		# No gravity while the qi is holding the body up: the technique would otherwise be a
+		# slower way of falling, since gravity here is more than twice its acceleration.
+		if not is_on_floor() and not _flying:
 			velocity.y -= _gravity * delta
 
 	_update_coyote(delta)
+	_update_recall(delta, rooted)
 	_handle_jump(delta, rooted)
 	_update_dash(delta, want_dir, rooted)
+	_bolt_cooldown = maxf(0.0, _bolt_cooldown - delta)
 
 	if is_on_floor() and not rooted and velocity.y <= 0.0:
 		# Project movement onto the slope so climbing hills needs no special case.
@@ -369,12 +439,25 @@ func is_dashing() -> bool:
 func _apply_horizontal(delta: float, dir: Vector3) -> void:
 	if _dash_timer > 0.0:
 		return
-	var top_speed: float = PlayerData.max_speed()
+	var top_speed: float = PlayerData.max_speed() * PlayerData.speed_multiplier()
 	var target_speed: float = top_speed * (1.0 if _running else walk_factor)
-	var target: Vector3 = dir * target_speed
-	var flat := Vector3(velocity.x, 0.0, velocity.z)
 	var accel: float = ground_accel if is_on_floor() else air_accel
 	var friction: float = ground_friction if is_on_floor() else air_friction
+	# Burst: the first three quarters of a second of a sprint, and only from a walk. Tracked
+	# from the moment the key goes down while moving at walking pace, so it is a launch rather
+	# than a bonus that is simply always on — a permanent bonus would be a number, and this is
+	# supposed to be a *feeling* on the first stride.
+	if _running and _burst_timer > 0.0:
+		target_speed *= PlayerData.sprint_burst_multiplier()
+		# ...and the acceleration with it, which is the half that actually shows. A launch is
+		# decided by how quickly the body *gets* moving, not by the ceiling it may eventually
+		# reach: from a standstill the body is still climbing towards the plain target when the
+		# window shuts, so raising the ceiling alone changed nothing a player could feel. The
+		# measured effect is now a third more ground covered in the same first quarter second.
+		accel *= PlayerData.sprint_burst_multiplier()
+		_burst_timer = maxf(0.0, _burst_timer - delta)
+	var target: Vector3 = dir * target_speed
+	var flat := Vector3(velocity.x, 0.0, velocity.z)
 
 	if dir.length_squared() > 0.0001:
 		flat = flat.move_toward(target, accel * delta)
@@ -415,6 +498,89 @@ func _handle_jump(delta: float, rooted: bool) -> void:
 	if _air_jumps_used < PlayerData.air_jumps():
 		_air_jumps_used += 1
 		_launch(jump_velocity() * air_jump_factor)
+
+
+# --------------------------------------------------------------- the qi arts
+
+## Throws a ball of the equipped aura's qi at what the body is looking at.
+##
+## Free of the input layer for the same reason the strike is: the tests drive what the key
+## drives. The element is not a second weapon on a list — it is *your* aura, which is why the
+## ball wears the colour of what you are wearing and why its weight follows your cultivation
+## rather than a number on a table somewhere else.
+func throw_bolt() -> bool:
+	if not PlayerData.has_effect("qi_bolt") or _bolt_cooldown > 0.0:
+		return false
+	if not is_ready_to_act():
+		return false
+	var cost: float = maxf(1.0, PlayerData.get_cap("qi") * BOLT_COST_SHARE)
+	if PlayerData.spend("qi", cost) < cost:
+		# Said out loud, because a technique that silently refuses reads as a broken key.
+		PlayerData.log_message.emit("Not enough qi for that.", "damage")
+		return false
+	_bolt_cooldown = BOLT_COOLDOWN
+	var aim: Vector3 = _aim_direction()
+	var from: Vector3 = global_position + Vector3(0.0, 1.35, 0.0) + aim * 0.8
+	var damage: float = (PlayerData.strike_damage() * BOLT_DAMAGE_FACTOR
+		* (1.0 + Cultivation.aura_power()))
+	BoltScript.spawn(get_parent(), from, aim, damage, BOLT_SPEED, _aura_color(), self)
+	Audio.play_at("whoosh", global_position, -3.0, 0.85)
+	return true
+
+
+## Where the body is aiming: the camera's own forward, pitch and all.
+##
+## The downward part is clamped, which is the one thing that has to be: a bolt thrown at the
+## ground two metres in front of the hand is a technique that hurts only its owner, and the
+## camera can be pointed almost straight down.
+func _aim_direction() -> Vector3:
+	if _camera_rig == null:
+		return -global_transform.basis.z.normalized()
+	var forward: Vector3 = -_camera_rig.global_transform.basis.z
+	forward.y = maxf(forward.y, -0.35)
+	return forward.normalized()
+
+
+## Cloud Step: holding the jump key while off the ground.
+##
+## A hold rather than a press, because a flight made of taps is a double jump with better
+## manners. It is paid for out of the dantian every second it is on, which is what makes it a
+## technique rather than a mode — and what makes the size of the pool decide how long you can
+## stay up, exactly as it decides how long Qi Pressure lasts.
+##
+## The ceiling is measured from the ground under the body rather than from a height in the
+## world, so it follows the country: nine metres over a hill is nine metres over a hill.
+func _update_flight(delta: float, rooted: bool) -> void:
+	var wanted: bool = (PlayerData.has_effect("flight") and not rooted and not _downed
+		and not is_on_floor() and Input.is_action_pressed("jump"))
+	if not wanted:
+		_flying = false
+		return
+	var cost: float = PlayerData.get_cap("qi") * FLIGHT_DRAIN_SHARE * delta
+	if PlayerData.spend("qi", cost) < cost:
+		_flying = false
+		return
+	_flying = true
+	velocity.y = move_toward(velocity.y, FLIGHT_RISE, FLIGHT_ACCEL * delta)
+	var ground: float = _ground_height()
+	if global_position.y >= ground + FLIGHT_CEILING:
+		# Held at the ceiling rather than refused: a body that dropped the moment it reached
+		# the top would read as the technique failing instead of as a limit.
+		velocity.y = minf(velocity.y, 0.6)
+		global_position.y = minf(global_position.y, ground + FLIGHT_CEILING)
+
+
+func is_flying() -> bool:
+	return _flying
+
+
+## The ground under the body, for the flight ceiling. Falls back to the body's own height,
+## which puts the ceiling out of reach rather than in the way if the terrain is not there.
+func _ground_height() -> float:
+	var terrain: Node = get_tree().root.get_node_or_null("Main/Terrain")
+	if terrain == null or not terrain.has_method("surface_height_at"):
+		return global_position.y - FLIGHT_CEILING
+	return float(terrain.call("surface_height_at", global_position.x, global_position.z))
 
 
 func _launch(speed: float) -> void:
@@ -492,12 +658,47 @@ func _track_fall() -> void:
 	_airborne = false
 	var fall: float = _peak_y - global_position.y
 	_peak_y = global_position.y
-	if not fall_damage_enabled or fall < safe_fall_height:
+	# Meteor, on the way down rather than on the way out of the crater: a landing hard enough
+	# to shake the ground is checked before the fall is priced, because a body that has learned
+	# to land that way has learned to be *hit* by nothing at all.
+	_shake_ground(fall)
+	# Softfoot deepens the drop that costs nothing, which is the half of it that is not about
+	# the number: a body that lands well can take the short way down a hillside.
+	var safe: float = safe_fall_height + PlayerData.safe_fall_bonus()
+	if not fall_damage_enabled or fall < safe:
 		return
-	var raw: float = (fall - safe_fall_height) * fall_damage_per_meter
+	var raw: float = (fall - safe) * fall_damage_per_meter * PlayerData.fall_multiplier()
 	Cultivation.stop_meditation()
-	struck.emit(PlayerData.apply_damage(raw))
+	struck.emit(PlayerData.apply_damage(raw, "fall"))
 	PlayerData.log_message.emit("Landed from %.1f m." % fall, "damage")
+
+
+## The landing that shakes the ground: everything standing within reach is knocked off its
+## feet. This is the end of the jump tree and it deliberately does no damage — it is a
+## *displacement*, so the thing it buys is the second and a half you get to walk into a camp
+## and choose which raider to open on.
+func _shake_ground(fall: float) -> void:
+	var radius: float = PlayerData.stagger_radius()
+	if radius <= 0.0 or fall < PlayerData.stagger_min_fall():
+		return
+	var shaken: int = 0
+	for node in get_tree().get_nodes_in_group("enemy"):
+		var enemy := node as Node3D
+		if enemy == null or not is_instance_valid(enemy):
+			continue
+		var away: Vector3 = enemy.global_position - global_position
+		away.y = 0.0
+		if away.length() > radius:
+			continue
+		if enemy.has_method("stagger"):
+			enemy.call("stagger", away)
+			shaken += 1
+	if shaken <= 0:
+		return
+	Audio.play_at("impact", global_position, 1.0, 0.7)
+	PlayerData.log_message.emit(
+		"You land hard. %d knocked off their feet." % shaken, "gain"
+	)
 
 
 ## Bodies that have run out of HP collapse. This is not a death screen: a few seconds
@@ -518,7 +719,8 @@ func _update_downed(delta: float) -> void:
 		return
 	if PlayerData.get_value("hp") <= 0.0:
 		_downed = true
-		_downed_timer = downed_seconds
+		# Iron Bones: a body that has been through the drills gets up twice as fast.
+		_downed_timer = downed_seconds * PlayerData.downed_multiplier()
 		velocity = Vector3.ZERO
 		Cultivation.stop_meditation()
 		PlayerData.log_message.emit("Your body gives out.", "damage")
@@ -533,6 +735,42 @@ func _respawn() -> void:
 	PlayerData.log_message.emit("You wake at the camp, whole.", "info")
 
 
+## Wayfaring: hold T, stand still, and come back to the fire.
+##
+## The world is a hundred and forty metres of rings now and the hub — the elder, the shop,
+## the posts, the only place that pays — is in the middle of it. Walking home from the far
+## ward every time a task finishes or a cap wants buying is the one piece of the loop that
+## is pure travel, and travel you have already done is not content. So there is exactly one
+## destination, it is the only one worth having, and it is not usable as a way out of
+## trouble: a blow resets the meter, and it cannot be started while rooted, downed or in a
+## fight you are losing.
+func _update_recall(delta: float, rooted: bool) -> void:
+	if not Input.is_action_pressed("recall"):
+		_recall_progress = 0.0
+		_recall_blocked = false
+		return
+	if rooted or _recall_blocked:
+		_recall_progress = 0.0
+		return
+	_recall_progress += delta
+	if _recall_progress < recall_seconds:
+		return
+	_recall_progress = 0.0
+	warp_to(_spawn_point())
+	Audio.play("confirm", -2.0)
+	PlayerData.log_message.emit("The ground lets go. You are at the fire again.", "info")
+
+
+## The attract meter, for the HUD. A dictionary rather than two getters, so the readout
+## cannot report a progress that belongs to a different attunement than the flag does.
+func recall_state() -> Dictionary:
+	return {
+		"attuning": _recall_progress > 0.0,
+		"progress": clampf(_recall_progress / maxf(0.01, recall_seconds), 0.0, 1.0),
+		"blocked": _recall_blocked,
+	}
+
+
 ## Where a beaten body wakes up: inside the safe zone, which is the one place raiders
 ## do not follow. Falls back to the terrain's own spawn point before the zone exists.
 func _spawn_point() -> Vector3:
@@ -545,6 +783,21 @@ func _spawn_point() -> Vector3:
 	return global_position + Vector3(0.0, 1.0, 0.0)
 
 
+## The steepest ground this body can run up. The training sets the slope and Surefoot buys
+## the extra fifteen degrees on top of it, so the same hillside that stops a fresh cultivator
+## is a route to someone who has put the distance in.
+func climbable_limit() -> float:
+	return climbable_degrees + PlayerData.climb_bonus_degrees()
+
+
+func _apply_climb_limit() -> void:
+	floor_max_angle = deg_to_rad(clampf(climbable_limit(), 5.0, 85.0))
+
+
+func _on_cap_moved(_stat_id: String, _old_cap: float, _new_cap: float) -> void:
+	_apply_climb_limit()
+
+
 ## A raider's blow, arriving from `source`.
 ##
 ## The knockback is what makes a fight feel like contact rather than a slow
@@ -554,17 +807,33 @@ func _spawn_point() -> Vector3:
 func take_enemy_blow(raw: float, source: Node3D = null) -> void:
 	if _downed:
 		return
+	# A blow is what makes the recall a decision rather than an escape hatch. Said out loud
+	# once, because a meter that silently empties reads as a bug.
+	if _recall_progress > 0.0 or _recall_blocked:
+		_recall_progress = 0.0
+		_recall_blocked = true
+		PlayerData.log_message.emit("The blow breaks your attunement.", "damage")
 	var dealt: float = PlayerData.apply_damage(raw)
 	struck.emit(dealt)
 	Cultivation.stop_meditation()
 	Audio.play_at("impact", global_position, -3.0, randf_range(0.9, 1.05))
 	if dealt <= 0.0 or source == null or not is_instance_valid(source):
 		return
+	# Warded: some of the blow goes back the way it came. Paid as a real hit — the same door a
+	# strike goes through — so it flinches, it prints a number, and it can finish what the
+	# fight started. There is no path back into this function from there, because an enemy has
+	# no way to answer one.
+	var reflect: float = PlayerData.reflect_fraction()
+	if reflect > 0.0 and dealt > 0.0 and source.has_method("take_hit"):
+		source.call("take_hit", dealt * reflect, global_position)
 	var away: Vector3 = global_position - source.global_position
 	away.y = 0.0
-	if away.length_squared() > 0.0001:
-		velocity += away.normalized() * 4.5
-		velocity.y = maxf(velocity.y, 1.5)
+	# Unshaken takes the push out of the blow entirely, and the little hop with it: a body that
+	# cannot be moved by hands should not be lifted off the floor either.
+	var knock: float = PlayerData.knockback_multiplier()
+	if away.length_squared() > 0.0001 and knock > 0.0:
+		velocity += away.normalized() * 4.5 * knock
+		velocity.y = maxf(velocity.y, 1.5 * knock)
 
 
 ## True while the body is inside the camp wards, where nothing hunts it.
@@ -584,7 +853,8 @@ func is_downed() -> bool:
 ## instead of re-deriving the rules, so "can I strike" and "can I move" cannot
 ## disagree about what the character is currently busy with.
 func is_ready_to_act() -> bool:
-	return not _downed and not Cultivation.meditating and not Training.is_training()
+	return (not _downed and not Cultivation.meditating and not Training.is_training()
+		and not Story.talking())
 
 
 func _aura_color() -> Color:
@@ -595,6 +865,12 @@ func _aura_color() -> Color:
 
 ## Called by the world when the player is teleported, so the fall that just
 ## happened on the way to the new spot does not register as damage.
+func _unhandled_input(event: InputEvent) -> void:
+	if event.is_action_pressed("throw"):
+		if throw_bolt():
+			get_viewport().set_input_as_handled()
+
+
 func reset_fall_tracking() -> void:
 	_airborne = not is_on_floor()
 	_peak_y = global_position.y

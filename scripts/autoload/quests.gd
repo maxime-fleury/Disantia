@@ -51,6 +51,14 @@ const TASKS: Array = [
 		"hint": "Press C to sit. A spirit zone does the same work faster.",
 	},
 	{
+		"id": "walkabout",
+		"title": "What is over the hill",
+		"detail": "Find {target} of the old places along the roads. They burn a light until you do.",
+		"kind": "discover", "target": 2.0,
+		"crystals": 12,
+		"hint": "Follow a road out of camp. Anything the map wants you to find is tall and lit.",
+	},
+	{
 		"id": "first_blood",
 		"title": "Blood on the road",
 		"detail": "Defeat {target} raiders at their camps.",

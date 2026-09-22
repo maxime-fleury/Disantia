@@ -18,24 +18,40 @@ extends Node3D
 ## procedural, so a hand-placed coordinate would be a bet on the noise field, and a
 ## zone sitting on a cliff face looks like a bug rather than a feature.
 
-## The catalogue, in the order they are placed. `required_tier` is a cultivation
-## stage, so the last one is several realms out of reach at the start.
+## The catalogue, in the order they are placed — and the order is load-bearing, because a
+## zone's index in this list *is* its ring. Zone 0 powers the home ring, zone 1 sits behind
+## the first ward with a champion standing on it, and so on outwards. `Wards.RING_ZONES`
+## names the same pairing from the other side; the two lists are read against each other and
+## the suite checks that they agree.
+##
+## `reach` is the band of the map's half-extent a zone may be placed in, as (inner, outer)
+## fractions. It used to be one shared band for all four, which meant a zone that powers the
+## third ward could be found twenty metres from the fire.
+##
+## `required_tier` is a cultivation stage, and it is now the *weaker* of the two gates: the
+## real one is the champion standing on the zone. It stays because a save can arrive from
+## anywhere, and "this ground is dormant until stage five" is a better answer for a player
+## who finds one early than a boost they have not earned.
 const ZONE_DEFS: Array = [
 	{
 		"id": "spring", "name": "Spirit Spring", "radius": 9.0,
 		"boost": 1.5, "required_tier": 0, "color": "6ec8ff",
+		"reach": Vector2(0.27, 0.40),
 	},
 	{
 		"id": "grove", "name": "Whispering Grove", "radius": 11.0,
 		"boost": 2.0, "required_tier": 2, "color": "9fe0a0",
+		"reach": Vector2(0.44, 0.62),
 	},
 	{
 		"id": "vein", "name": "Earth Vein", "radius": 12.0,
 		"boost": 2.5, "required_tier": 5, "color": "ffd76e",
+		"reach": Vector2(0.67, 0.78),
 	},
 	{
 		"id": "peak", "name": "Storm Peak", "radius": 13.0,
 		"boost": 3.5, "required_tier": 9, "color": "c9a6ff",
+		"reach": Vector2(0.83, 0.94),
 	},
 ]
 
@@ -63,46 +79,78 @@ func _ready() -> void:
 	tree_exiting.connect(_clear)
 
 
-## Rejection-samples each catalogue entry until it finds level, well-separated ground.
+## Rejection-samples each catalogue entry until it finds level, well-separated ground inside
+## that entry's own ring.
+##
+## Each zone gets its own attempt budget and its own band, and a zone whose band turns out to
+## be all hillside relaxes *outward* rather than being given up on: the inner edge is the
+## part that matters (a zone must be on the far side of the ward whose ring it powers), and
+## the outer band is only there to keep it away from the rim. The last resort widens the
+## slope it will accept, because a zone on a gentle hill is a much smaller problem than a
+## ring with no zone in it at all.
 func _place(terrain: Node) -> void:
 	var extent: float = 64.0
 	if terrain.has_method("extent"):
 		extent = float(terrain.call("extent"))
 	var rng := RandomNumberGenerator.new()
 	rng.seed = zone_seed
-	var attempts: int = 0
-	while _zones.size() < ZONE_DEFS.size() and attempts < 600:
-		attempts += 1
-		var defn: Dictionary = ZONE_DEFS[_zones.size()]
+	var notes: Array = []
+	for index in ZONE_DEFS.size():
+		var defn: Dictionary = ZONE_DEFS[index]
+		var band: Vector2 = defn.get("reach", Vector2(0.30, 0.76))
+		var placed: Dictionary = _sample(index, defn, band, terrain, rng, 0.0)
+		if placed.is_empty():
+			placed = _sample(index, defn, band, terrain, rng, 0.5)
+		if placed.is_empty():
+			placed = _sample(index, defn, band, terrain, rng, 1.0)
+		if placed.is_empty():
+			push_warning("[qi] no ground for %s in %.2f–%.2f" % [defn["name"], band.x, band.y])
+			continue
+		_zones.append(placed)
+		_build(placed)
+		notes.append("%s(ring %d, r=%.0f m, x%.1f%s)" % [
+			placed["name"], index,
+			Vector2(placed["position"].x, placed["position"].z).length(),
+			float(placed["boost"]),
+			"" if placed["relax"] == 0.0 else ", relaxed",
+		])
+	print("[qi] %d/%d zones placed: %s" % [
+		_zones.size(), ZONE_DEFS.size(), ", ".join(notes),
+	])
+
+
+## One zone's search. `relax` walks the band's outer edge out towards the rim and loosens
+## the slope it will accept, so a stubborn ring still gets its zone.
+func _sample(index: int, defn: Dictionary, band: Vector2,
+		terrain: Node, rng: RandomNumberGenerator, relax: float) -> Dictionary:
+	var extent: float = float(terrain.call("extent"))
+	var outer: float = lerpf(band.y, 0.965, relax)
+	var slope_limit: float = lerpf(max_slope, max_slope * 2.4, relax)
+	for attempt in 240:
 		var angle: float = rng.randf_range(0.0, TAU)
-		# Inside the far corners: the terrain is square, so the inscribed disc is the
-		# only region where a radius-sized disc is guaranteed to fit.
-		var reach: float = extent * rng.randf_range(0.30, 0.76)
+		# Inside the far corners: the terrain is square, so the inscribed disc is the only
+		# region where a radius-sized disc is guaranteed to fit.
+		var reach: float = extent * rng.randf_range(band.x, outer)
 		var x: float = cos(angle) * reach
 		var z: float = sin(angle) * reach
 		if Vector2(x, z).length() < camp_clearance:
 			continue
 		var too_close: bool = false
-		for placed: Dictionary in _zones:
-			var centre: Vector3 = placed["position"]
+		for other: Dictionary in _zones:
+			var centre: Vector3 = other["position"]
 			if Vector2(x - centre.x, z - centre.z).length() < zone_separation:
 				too_close = true
 				break
 		if too_close:
 			continue
-		if terrain.has_method("slope_at") and float(terrain.call("slope_at", x, z)) > max_slope:
+		if terrain.has_method("slope_at") and float(terrain.call("slope_at", x, z)) > slope_limit:
 			continue
-		var y: float = float(terrain.call("surface_height_at", x, z))
 		var entry: Dictionary = defn.duplicate()
-		entry["position"] = Vector3(x, y, z)
-		_zones.append(entry)
-		_build(entry)
-	print("[qi] %d zones placed in %d attempts: %s" % [
-		_zones.size(), attempts,
-		", ".join(_zones.map(func(z: Dictionary) -> String:
-			return "%s(r=%.0f x%.1f stage %d)" % [
-				z["name"], z["radius"], z["boost"], z["required_tier"]])),
-	])
+		entry["ring"] = index
+		entry["relax"] = relax
+		entry["position"] = Vector3(x, float(terrain.call("surface_height_at", x, z)), z)
+		return entry
+	return {}
 
 
 func _build(zone: Dictionary) -> void:
@@ -177,18 +225,22 @@ func _process(_delta: float) -> void:
 		_clear()
 		return
 	var required: int = int(zone["required_tier"])
-	var unlocked: bool = Cultivation.tier >= required
+	var ring: int = int(zone.get("ring", 0))
+	# Two ways for a zone to be dormant, and they are different answers for the player:
+	# a champion is standing on it, or the cultivator has not reached the stage it wants.
+	var awake: bool = Wards.zone_awake(ring)
+	var unlocked: bool = awake and Cultivation.tier >= required
 	Cultivation.zone_name = String(zone["name"])
 	Cultivation.zone_required_tier = required
 	Cultivation.zone_locked = not unlocked
 	Cultivation.zone_boost = float(zone["boost"]) if unlocked else 1.0
-	_announce(zone, unlocked)
+	_announce(zone, unlocked, awake, ring)
 
 
 ## Says something once per zone rather than once per frame, which is the difference
 ## between an event log and a stutter.
-func _announce(zone: Dictionary, unlocked: bool) -> void:
-	var key: String = "%s:%s" % [zone["id"], unlocked]
+func _announce(zone: Dictionary, unlocked: bool, awake: bool, ring: int) -> void:
+	var key: String = "%s:%s:%s" % [zone["id"], unlocked, awake]
 	if key == _announced:
 		return
 	_announced = key
@@ -196,10 +248,20 @@ func _announce(zone: Dictionary, unlocked: bool) -> void:
 		Cultivation.log_message.emit(
 			"Spirit zone: %s — cultivating here runs at ×%.1f."
 			% [zone["name"], float(zone["boost"])], "cultivate")
-	else:
+		return
+	if not awake:
+		# Naming the champion is the whole message: it is the only way to wake the ground,
+		# and "something is standing on it" is what makes the zone a place to fight for
+		# rather than a place to walk to.
+		var warden: Dictionary = Wards.warden_of_ring(ring)
 		Cultivation.log_message.emit(
-			"%s is dormant for you. It answers at stage %s."
-			% [zone["name"], _numeral(int(zone["required_tier"]))], "info")
+			"%s is asleep — %s is standing on it." % [
+				zone["name"], String(warden.get("label", "something")),
+			], "damage")
+		return
+	Cultivation.log_message.emit(
+		"%s is dormant for you. It answers at stage %s."
+		% [zone["name"], _numeral(int(zone["required_tier"]))], "info")
 
 
 func _clear() -> void:
