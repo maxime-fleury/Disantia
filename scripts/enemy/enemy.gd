@@ -56,6 +56,14 @@ enum State {
 ## Seconds into a swing that the blow actually lands.
 @export var attack_windup: float = 0.45
 @export var turn_speed: float = 7.0
+## On for the raiders of a night raid, and off for every other body in the valley.
+##
+## Every raider in this project hunts exactly one thing: the player. That is right for a camp —
+## a body walking past a fire is the only event a camp has — and it is wrong for a squad that came
+## to break a gate, which would jog past the watch at full chase speed while the player watched.
+## With this on, the body being hunted is *whoever is in the way*: the nearest watchman on its
+## feet, or the player if the player is nearer.
+@export var brawl: bool = false
 
 @export_group("Champion")
 ## Set on the champions who hold the spirit zones, and empty on every raider. It is the
@@ -119,6 +127,8 @@ var hp: float = 55.0
 var state: int = State.GUARD
 
 var _player: CharacterBody3D
+## The body being hunted this frame — the player almost always, a watchman during a raid.
+var _quarry: Node3D
 var _rig: Node3D
 var _anim: AnimationPlayer
 var _clips: Dictionary = {}
@@ -565,6 +575,11 @@ func _update_health_bar() -> void:
 func _may_pursue() -> bool:
 	if is_dead() or _player == null or not is_instance_valid(_player):
 		return false
+	# Night lengthens what a raider is willing to do about somebody: it sees further and it
+	# follows further. Read here rather than baked into `aggro_radius` at spawn, because the
+	# sun sets while a body is already awake, and a raider that was chasing you a minute ago
+	# should not lose interest because the light changed.
+	var quarry: Node3D = _quarry if _quarry != null and is_instance_valid(_quarry) else _player
 	# Spared: this one will not start anything. It will finish something, though — a raider
 	# that has been hit is not standing on the road's business any more, it is in a fight,
 	# and a mercy that also made a body invulnerable would not be a mercy.
@@ -574,21 +589,65 @@ func _may_pursue() -> bool:
 	# not follow a body into one. Asked of the haven registry rather than of a single scene
 	# node, because there is more than one such place now and a rule written against "the"
 	# safe zone would have left every village open.
-	if Haven.contains(_player.global_position) or Haven.contains(global_position):
+	if Haven.contains(quarry.global_position) or Haven.contains(global_position):
 		return false
 	var home_distance: float = Vector2(
 		global_position.x - home.x, global_position.z - home.z
 	).length()
-	if home_distance > leash_radius:
+	if home_distance > leash_radius * Clock.leash_share():
 		return false
-	if _player.has_method("is_downed") and bool(_player.call("is_downed")):
+	if quarry.has_method("is_downed") and bool(quarry.call("is_downed")):
 		return false
 	return true
+
+
+## Who this body is trying to hurt, this frame.
+##
+## The player, for everything in the valley — with one exception. A raid's raiders fight the
+## watch that stands in front of them, falling back on the player only when the player is the
+## nearer problem. Written as a choice between two candidates rather than a retargeting scheme,
+## because those are the only two kinds of body in the game and a general "nearest enemy" would
+## eventually make a camp's raider turn on its own champion.
+func _pick_quarry() -> Node3D:
+	if not brawl:
+		return _player
+	var reach: float = aggro_radius * Clock.aggro_share()
+	var player_distance: float = INF
+	if _player != null and is_instance_valid(_player):
+		player_distance = Vector2(
+			_player.global_position.x - global_position.x,
+			_player.global_position.z - global_position.z
+		).length()
+	# The player within reach wins outright: a raid is still *about* the player when they turn up
+	# in the middle of it, and a squad that ignored them for the watch would make joining in
+	# pointless — which is the one thing this whole file is here to make worthwhile.
+	if player_distance <= reach:
+		return _player
+	var best: Node3D = null
+	var best_distance: float = reach
+	for node: Node in get_tree().get_nodes_in_group("guard"):
+		var guard := node as Node3D
+		if guard == null or not is_instance_valid(guard):
+			continue
+		if guard.has_method("is_downed") and bool(guard.call("is_downed")):
+			continue
+		var d: float = Vector2(
+			guard.global_position.x - global_position.x,
+			guard.global_position.z - global_position.z
+		).length()
+		if d <= best_distance:
+			best_distance = d
+			best = guard
+	return best
 
 
 func _physics_process(delta: float) -> void:
 	if _player == null or not is_instance_valid(_player):
 		_player = get_tree().get_first_node_in_group("player") as CharacterBody3D
+	# Chosen once, at the top, so the swing, the bolt and the chase all agree about who this body
+	# is fighting within a single frame — a raider that aimed its swing at the watch and its bolt
+	# at the player would be two fights in one animation.
+	_quarry = _pick_quarry()
 	if _stagger > 0.0:
 		_stagger = maxf(0.0, _stagger - delta)
 		# Thrown, not walking: the push bleeds off and gravity does the rest, and nothing else in
@@ -624,12 +683,12 @@ func _physics_process(delta: float) -> void:
 
 	var to_player: Vector3 = Vector3.ZERO
 	var player_distance: float = INF
-	if _player != null and is_instance_valid(_player):
-		to_player = _player.global_position - global_position
+	if _quarry != null and is_instance_valid(_quarry):
+		to_player = _quarry.global_position - global_position
 		player_distance = Vector2(to_player.x, to_player.z).length()
 
 	var can_pursue: bool = _may_pursue()
-	if can_pursue and player_distance <= aggro_radius:
+	if can_pursue and player_distance <= aggro_radius * Clock.aggro_share():
 		_aggro = true
 	elif not can_pursue or player_distance > give_up_radius:
 		# Without the second half of this, aggro is sticky: a raider that noticed you once
@@ -705,16 +764,21 @@ func _tick_swing(delta: float) -> void:
 	if _swing_at > 0.0:
 		return
 	_swing_at = -1.0
-	if not _aggro or _player == null or not is_instance_valid(_player):
+	if not _aggro or _quarry == null or not is_instance_valid(_quarry):
 		return
 	var distance: float = Vector2(
-		_player.global_position.x - global_position.x,
-		_player.global_position.z - global_position.z
+		_quarry.global_position.x - global_position.x,
+		_quarry.global_position.z - global_position.z
 	).length()
 	if distance > attack_range + 0.35:
 		return
-	if _player.has_method("take_enemy_blow"):
-		_player.call("take_enemy_blow", attack_damage, self)
+	# Two doors because there are two kinds of body. The player takes a blow through
+	# `take_enemy_blow`; a watchman takes it through `take_hit_from`, which is the same wound
+	# without the crime — a guard struck by a raider is not a crime *the player committed*.
+	if _quarry.has_method("take_enemy_blow"):
+		_quarry.call("take_enemy_blow", attack_damage, self)
+	elif _quarry.has_method("take_hit_from"):
+		_quarry.call("take_hit_from", attack_damage, self)
 
 
 ## The Ninth's thrown attack: wind up, then throw.
@@ -735,11 +799,11 @@ func _tick_ranged(delta: float) -> void:
 	_bolt_timer = maxf(0.0, _bolt_timer - delta)
 	if _bolt_timer > 0.0 or not _aggro or not _may_pursue():
 		return
-	if _player == null or not is_instance_valid(_player):
+	if _quarry == null or not is_instance_valid(_quarry):
 		return
 	var distance: float = Vector2(
-		_player.global_position.x - global_position.x,
-		_player.global_position.z - global_position.z
+		_quarry.global_position.x - global_position.x,
+		_quarry.global_position.z - global_position.z
 	).length()
 	if distance < bolt_min_range or distance > bolt_range:
 		return
@@ -750,9 +814,9 @@ func _tick_ranged(delta: float) -> void:
 
 
 func _release_bolt() -> void:
-	if _player == null or not is_instance_valid(_player):
+	if _quarry == null or not is_instance_valid(_quarry):
 		return
-	var to_player: Vector3 = _player.global_position + Vector3(0.0, 0.9, 0.0) - global_position
+	var to_player: Vector3 = _quarry.global_position + Vector3(0.0, 0.9, 0.0) - global_position
 	QiBolt.spawn(
 		get_parent(),
 		global_position + Vector3(0.0, target_height * scale_factor * 0.7, 0.0),

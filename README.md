@@ -62,7 +62,7 @@ on the cross-origin isolation headers Godot's web export wants.
 | `C` | Cultivate (sit and refine) — a toggle |
 | `B` | Break through, when insight is full |
 | `1` `2` `3` | Drill the body — pushups, squats, iron stance. Toggles |
-| `E` | Talk — to the elder, or to anybody standing in the world |
+| `E` | Talk, or take a stair — whatever the line above the hint strip says is within reach |
 | `Tab` | Settings |
 | `V` | Fold the stat readout away |
 | `F5` | Save (it also autosaves, and on window close) |
@@ -312,6 +312,12 @@ trance to sit in, no shelf, and the only healing is what you carried in. The way
 open, your best depth is kept, and the crown is the highest thing on the map by an order of
 magnitude — you can see what you have not done yet from thirty metres away.
 
+The way in is a conversation at the door rather than a key: the stairhead and the frontier are two
+different runs, and the door is where the choice belongs. For a long time that conversation was
+the *only* way in and nothing said so — the climb was reachable and unreachable at once. The hint
+strip now answers for the whole world: anything in the `interactable` group says what the key
+would do and how far away it counts, and the nearest one wins.
+
 ### One line that says what is happening
 
 Four systems have nothing to do with each other and share a single line at the foot of the
@@ -328,6 +334,61 @@ with it, meditating hurries time along, and the night changes what the world is 
 in — the wards read differently, aggression and leashes shift, and the gates of a village are
 the only thing worth standing behind.
 
+Night is also a *sky*. Godot's procedural sky is a gradient with a sun in it, which does daylight
+beautifully and night not at all; a dome carrying stars and a moon is drawn over the top of it and
+faded out by the clock, so midday is untouched. The moon takes the sun's own direction and turns
+it around — there is already one light in this world and a second would have to be reconciled with
+its shadows — and the stars are the shader's own hash rather than a texture, so the web build
+carries none of them.
+
+### Two languages
+
+English and French, switched in the settings panel, remembered in the save.
+
+**The English sentence is the key.** A symbolic key (`QUEST_FIRST_STEPS`) needs a second file
+mapping keys to English before a single word is translated, and a sentence typed in the code and
+never listed in the table is then *invisible* — nothing can find it. With the English as the key, a
+missing row simply *is* the English: the game is never broken or blank by an untranslated line, and
+the table can be filled in a hundred rows at a time, in any order, without touching the code that
+prints them.
+
+Two mechanisms, and the split matters:
+
+* Godot re-translates a `Control`'s own text on the way to the screen — every label, button,
+  heading and `Label3D` name plate in the game. Static text needs **no wiring at all**, and
+  switching language re-translates every screen that is already open.
+* `Loc.say` and `Loc.fill` are for what the engine cannot see: a line built in code, a log message,
+  anything with numbers in it. A template is translated *before* the values go in, because
+  `"Floor %d"` and `"Étage %d"` are the same three words in a different order.
+
+The suite checks the one mistake a translated format string can make — a placeholder that went
+missing or changed kind, which is a crash in the middle of a conversation rather than a typo — by
+comparing the placeholders of every row in the table.
+
+### Voices
+
+Around ninety of the lines the game prints are **recorded**, and a conversation says its line
+through the same signal that puts it on the band. Fifteen characters with fifteen voices is the
+difference between a crowd you interview and a place you walk into.
+
+* The lines are not listed by hand. `tools/make_voice.py` reads them out of the prose tables the
+game already prints from (`story.gd`, `villages.gd`, `quests.gd`, `tower.gd`), which is the only way
+the corpus stays honest: a list kept beside the sentences is wrong the first time somebody rewrites
+a greeting, and the failure is silent.
+* **A language is a set of recordings, not a translation of one.** French is a separate take; a
+  line with no French recording is played in English rather than in an English voice reading French
+  words, and a line with neither is silent. Most lines are dynamic (a floor number, a crystal
+  count) and will never be recorded, which is fine and is the point.
+* The line is the key, exactly as in the interface, so a line with no recording is simply a line
+  nobody has said yet.
+* Regenerating is free for anything already made, so the tool is a top-up rather than a rebuild:
+
+```bash
+python tools/make_voice.py --key sk-or-... --voice Eve
+```
+
+`Voice` can be turned off in the settings panel, and the choice is saved.
+
 ---
 
 ## The self-test
@@ -342,8 +403,12 @@ godot --headless --path . -- --selftest
 It ends with a count and exits non-zero if anything failed:
 
 ```
----- self test: 898 checks, 0 failed ----
+---- self test: 1148 checks, 0 failed ----
 ```
+
+Run it in **game mode** (`godot --headless --path . -- --selftest`), not through `-s`. In script
+mode the engine registers only some of the autoloads as globals, so a suite that names the newest
+one fails to compile — with the error naming the autoload rather than the flag.
 
 It is run against the **shipped binary** as well as the editor, which has caught real
 bugs that only exist in a release export:
@@ -361,6 +426,22 @@ not, and that no two HUD panels overlap at either the design resolution or the w
 own. It runs on the real clock of the engine, not the wall clock, because that is the
 clock the game integrates over.
 
+The sections added since are worth naming, because each of them exists to catch a failure
+that had already shipped:
+
+* **The camera.** It measures the distance from the body to the camera at rest and at the top
+  of a jump, and requires the arm to collide with nothing — the spring arm against the terrain
+  was shortening in the air and pulling the camera onto the character, which the player reported
+  as "it zooms on me when I jump".
+* **The tower's door.** It stands the body outside the door and presses `E`, because everything
+  else about the tower was tested by calling `Tower.enter` directly: a hundred floors of composed,
+  green-tested content was unreachable, and every check was passing.
+* **The voices.** That every file the generated table names is on disk, that a line with no
+  recording is silent rather than an error, and that the language of the recording follows the
+  language of the interface.
+* **The night sky.** That nothing shows at noon and the stars are up at midnight, and that the
+  moon is opposite the sun — the sign of a basis is exactly the thing a tidy-up flips.
+
 ---
 
 ## Layout
@@ -373,16 +454,20 @@ scripts/
             decisions), haven (the sanctuary registry), villages (the three towns, their
             people and their reputation), law (wanted, fines, cells), bounties (the boards),
             forge (materials and named gear), tower (the hundred floors), clock (day and
-            night)
+            night), raids (the night a village is attacked), loc (the language) and
+            voice_table (the recorded lines; generated, do not edit)
   player/   controller, animator, camera rig, striker, aura, qi_pressure
   world/    terrain, roads, scatter, camps, qi zones, safe zone, signposts,
             landmarks (the sites), quest_npc (the elder), villager, people (the crowd),
             village_site + villages_place (the towns), village_npc, guard (the watch),
-            tower_site (the tower and its arena)
+            tower_site (the tower and its arena), night_sky (the stars and the moon)
   ui/       hud, minimap, wayfinder, avatar nameplate
   enemy/    the raider, the factory that composes a floor's fight
+assets/
+  voice/    the recorded lines, one folder per language — see tools/make_voice.py
 tests/      self_test.gd — the headless suite
-tools/      setup_project.gd (writes project.godot), export scripts, web server
+tools/      setup_project.gd (writes project.godot), make_voice.py (bakes the spoken
+            lines), export scripts, web server
 ```
 
 `tools/setup_project.gd` is the source of truth for project settings — the input map,
@@ -410,5 +495,10 @@ opens and runs as-is:
 These are distributed under their own licences (the kits above are commonly released
 as CC0). They are redistributed here for convenience; check each pack's own terms
 before reusing them elsewhere.
+
+The spoken lines in `assets/voice/` are **not** from a pack. They are generated from this
+project's own prose by `tools/make_voice.py`, through OpenRouter's speech endpoint
+(`x-ai/grok-voice-tts-1.0`), and committed so the game speaks without a network call and without an
+API key. The tool is the source of truth: delete a file and re-run it and the take comes back.
 
 The code in `scripts/`, `scenes/` and `tools/` has no licence file yet.

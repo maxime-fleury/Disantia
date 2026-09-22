@@ -296,20 +296,43 @@ func _player_node() -> Node3D:
 ## A blow from the player. A watchman is a body, not a wall: it can be beaten, and beating it is
 ## the worst thing a player can do short of murdering a village — which is why it is the crime
 ## that puts them on the third rung immediately.
+##
+## This is the *only* door that reports a crime, and it is separate from the wound for exactly
+## that reason. A raid is a fight between a raider and a watchman, and a village that put the
+## player on trial for the murder of its own guard — killed by somebody else, in a fight the
+## player may not have been within a hundred metres of — is a law with no idea what it is for.
 func take_hit(damage: float, from: Vector3 = Vector3.ZERO) -> float:
+	if state == State.DOWN:
+		return 0.0
+	Law.add_crime("assault", village_id, "%s was struck" % guard_name)
+	return _wound(damage, _player_node(), true)
+
+
+## The same wound, from something that is not the player — a raider in a raid. No crime, and the
+## watch turns on the thing that hit it rather than on whoever is nearest.
+func take_hit_from(damage: float, attacker: Node3D) -> float:
+	return _wound(damage, attacker, false)
+
+
+func _wound(damage: float, at: Node3D, by_player: bool) -> float:
 	if state == State.DOWN:
 		return 0.0
 	var dealt: float = maxf(0.0, damage)
 	hp = maxf(0.0, hp - dealt)
-	Law.add_crime("assault", village_id, "%s was struck" % guard_name)
-	_target = _player_node()
+	_target = at
 	state = State.CHASE
 	_swing_at = -1.0
 	_attack_timer = 0.6
 	_flinch()
 	if hp <= 0.0:
-		_fall()
+		_fall(by_player)
 	return dealt
+
+
+## Whether this watchman is off his feet. Asked by the raiders choosing what to hit next and by
+## the suite; the beat, the fight and the arrest all turn on it.
+func is_downed() -> bool:
+	return state == State.DOWN
 
 
 func _flinch() -> void:
@@ -320,11 +343,16 @@ func _flinch() -> void:
 	tween.tween_property(_rig, "rotation:x", 0.0, 0.4)
 
 
-func _fall() -> void:
+func _fall(by_player: bool = true) -> void:
 	state = State.DOWN
 	_down_timer = recover_seconds
 	_target = null
-	Law.add_crime("murder", village_id, "%s was killed in the open" % guard_name)
+	if by_player:
+		Law.add_crime("murder", village_id, "%s was killed in the open" % guard_name)
+	else:
+		PlayerData.log_message.emit(
+			"%s is down. Somebody else's fight, and the village knows it." % guard_name, "damage"
+		)
 	if _rig != null:
 		_rig.rotation.x = deg_to_rad(-80.0)
 		_rig.position.y = 0.2

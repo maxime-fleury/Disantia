@@ -42,6 +42,14 @@ script = ExtResource("2_camera")
 
 [node name="SpringArm3D" type="SpringArm3D" parent="CameraRig"]
 transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, 0)
+; No collision at all. A SpringArm exists to stop the camera going through a wall, and in this
+; game the wall is the ground: the terrain is one enormous static body under every angle below
+; the horizon, so the arm spent the whole game shortened against it — and the moment the body was
+; in the air, with the ground falling away behind, the length crawled back to full and the camera
+; lurched out and in again. Reading that as "it zooms on my character when I jump" is correct.
+; Third-person clipping past a fence for a fifth of a second is much cheaper than a camera that
+; will not back off.
+collision_mask = 0
 spring_length = 6.0
 margin = 0.25
 

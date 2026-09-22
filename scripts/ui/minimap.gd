@@ -254,24 +254,54 @@ func _draw_camps() -> void:
 ## the next one's business — so a single global "wanted" marker would be a lie about the three
 ## places it could be about.
 func _draw_villages() -> void:
+	for mark: Dictionary in village_marks():
+		var at: Vector2 = mark["at"]
+		var tint: Color = mark["tint"]
+		var shut: bool = bool(mark["shut"])
+		draw_arc(at, 5.6, 0.0, TAU, 22, Color(tint, 0.9 if not shut else 0.55), 1.5, true)
+		draw_circle(at, 2.2, Color(tint, 0.85))
+		# A tick across the square for the rungs of the ladder: one crime is a mark you can
+		# still walk off, and an outlaw's village is crossed out.
+		if int(mark["wanted"]) >= 2:
+			draw_line(at - Vector2(3.0, -3.0), at + Vector2(3.0, -3.0), COL_CAMP, 1.4, true)
+		# A gate that is down is drawn *open* — the ring broken on either side of the gate — and
+		# the village under tonight's raid wears a ring of its own. Between them the map answers
+		# the only two questions a raid raises: which one, and is it still open.
+		if bool(mark["sacked"]):
+			draw_arc(at, 5.6, -0.85, 0.85, 8, COL_CAMP, 2.0, true)
+			draw_arc(at, 5.6, PI - 0.85, PI + 0.85, 8, COL_CAMP, 2.0, true)
+		if bool(mark["raided"]):
+			draw_arc(at, 8.8, 0.0, TAU, 26, Color(COL_CAMP, 0.8), 1.6, true)
+
+
+## What the map is about to draw, as data.
+##
+## The same reason `landmark_counts` exists: a test cannot read pixels, and a mark worked out
+## twice — once for the screen and once for the check — is a check that stays green while the
+## screen goes wrong.
+func village_marks() -> Array:
+	var out: Array = []
+	var raided: String = String(Raids.tonight.get("village", ""))
 	for entry: Dictionary in Villages.all():
 		var village_id: String = String(entry["id"])
 		var site: Dictionary = Haven.site(village_id)
 		if site.is_empty():
 			continue
 		var centre: Vector3 = site["centre"]
-		var at: Vector2 = _to_map(Vector2(centre.x, centre.z))
 		var tint: Color = entry.get("colour", COL_SAFE)
 		var wanted: int = Law.wanted_at(village_id)
 		if wanted > 0:
 			tint = COL_CAMP.lerp(tint, 0.25)
-		var shut: bool = Law.shops_closed(village_id)
-		draw_arc(at, 5.6, 0.0, TAU, 22, Color(tint, 0.9 if not shut else 0.55), 1.5, true)
-		draw_circle(at, 2.2, Color(tint, 0.85))
-		# A tick across the square for the rungs of the ladder: one crime is a mark you can
-		# still walk off, and an outlaw's village is crossed out.
-		if wanted >= 2:
-			draw_line(at - Vector2(3.0, -3.0), at + Vector2(3.0, -3.0), COL_CAMP, 1.4, true)
+		out.append({
+			"id": village_id,
+			"at": _to_map(Vector2(centre.x, centre.z)),
+			"tint": tint,
+			"wanted": wanted,
+			"shut": Law.shops_closed(village_id),
+			"sacked": Raids.is_sacked(village_id),
+			"raided": raided == village_id,
+		})
+	return out
 
 
 ## The tower, as a spire: a triangle and a mast, so it is legible at four pixels and readable

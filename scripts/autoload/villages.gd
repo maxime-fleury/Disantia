@@ -35,13 +35,20 @@ signal reputation_changed(village_id: String, total: int, reason: String)
 ## caravans, the guards' patrols and the signposts all read the same roads, and a village
 ## that was placed off one would have been unreachable by everything except the player.
 ##
+## `radius` is the whole footprint — the palisade, the ring of houses and the square inside it
+## all scale off this one number — and `huts` is how many roofs stand in it, so the three read
+## as a hamlet, a town and a city rather than as the same village three times at three sizes.
+## A bigger radius is not free: the ground has to be level across it, and the builder searches
+## for a spot that is, so a number this large is a claim about the terrain as much as about
+## the village.
+##
 ## `reach` is a fraction of the map's half-extent like every other placement rule in the
 ## project, so the world stays one table that scales with the terrain.
 const VILLAGES: Array = [
 	{
 		"id": "hollowmere", "name": "Hollowmere", "subtitle": "the road's start",
-		"road": 1, "reach": 0.20, "offset": 9.5, "radius": 17.0,
-		"colour": Color("7fb069"), "huts": 4,
+		"road": 1, "reach": 0.20, "offset": 9.5, "radius": 26.0,
+		"colour": Color("7fb069"), "huts": 6,
 		"specialty": "healer",
 		"flavour": "Hollowmere — a well, four roofs, and a palisade somebody mended twice.",
 		"welcome": "You came down the road, so you are somebody's news. Sit. Nothing here is in a hurry.",
@@ -50,8 +57,8 @@ const VILLAGES: Array = [
 	},
 	{
 		"id": "stonewatch", "name": "Stonewatch", "subtitle": "the forge",
-		"road": 4, "reach": 0.47, "offset": 10.5, "radius": 18.0,
-		"colour": Color("d9824a"), "huts": 5,
+		"road": 4, "reach": 0.47, "offset": 10.5, "radius": 38.0,
+		"colour": Color("d9824a"), "huts": 10,
 		"specialty": "smith",
 		"flavour": "Stonewatch — hammer, smoke, and a palisade of new-cut timber.",
 		"welcome": "Mind the sparks. Everything here is either being made or being repaired.",
@@ -60,8 +67,8 @@ const VILLAGES: Array = [
 	},
 	{
 		"id": "towerfall", "name": "Towerfall", "subtitle": "the tower's foot",
-		"road": 7, "reach": 0.685, "offset": 11.0, "radius": 19.0,
-		"colour": Color("8f8fe0"), "huts": 5,
+		"road": 7, "reach": 0.685, "offset": 11.0, "radius": 52.0,
+		"colour": Color("8f8fe0"), "huts": 15,
 		"specialty": "scholar",
 		"flavour": "Towerfall — the spire's shadow lies over the whole square, and nobody looks up.",
 		"welcome": "You have seen it. Everybody who arrives has seen it. The question is why you came anyway.",
@@ -628,6 +635,11 @@ func folk_line(village_id: String) -> String:
 ## the two files cannot disagree about what is for sale where.
 func shelf(village_id: String) -> Dictionary:
 	var out: Dictionary = {"pieces": [], "consumables": []}
+	# A village whose gate went down has no market. Emptied here, at the one door everything
+	# buys through, rather than at each panel: the shelf is what the HUD draws, the forge
+	# stocks and the price is quoted against, so closing it here closes all of them.
+	if Raids.is_sacked(village_id):
+		return out
 	var forge: Node = get_node_or_null("/root/Forge")
 	if forge == null or not forge.has_method("stock_here"):
 		return out
@@ -765,7 +777,15 @@ func _shop_panel(village_id: String) -> Dictionary:
 		String(village.get("name", "")), String(village.get("subtitle", "")),
 		rep_label(village_id), rep_of(village_id), PlayerData.crystals,
 	]
-	if Law.shops_closed(village_id):
+	# The shelf is empty because the gate is down, and the panel has to say which of the two
+	# reasons it is: a shut door because the watch is hunting you and a shut door because the
+	# village was burned last night are the same picture with opposite answers.
+	if Raids.is_sacked(village_id):
+		var mended: int = Raids.repair_cost(village_id)
+		subtitle = "%s — the market is ash. The gate is down; %d crystals mends it, and any door in the square will take it." % [
+			String(village.get("name", "")), mended
+		]
+	elif Law.shops_closed(village_id):
 		subtitle = "The shutters are up. %s will not sell to an outlaw." % String(village.get("name", ""))
 	elif Law.wanted_at(village_id) > 0:
 		# Said out loud, because a price that quietly doubles is indistinguishable from a bug —

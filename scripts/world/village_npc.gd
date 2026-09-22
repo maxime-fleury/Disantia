@@ -83,6 +83,18 @@ func _build_plates() -> void:
 	add_child(_role_plate)
 
 
+## The same answer as the elder's, with the trade on the end of it: the role plate over a head
+## already says *what* somebody is, and the prompt is where it pays off. "Speak with Sarn — the
+## forge" is actionable; "speak with Sarn" is a name the player has to remember.
+func interact_prompt() -> String:
+	if not in_range():
+		return ""
+	var trade: String = role_label()
+	if trade == "":
+		return Loc.fill("speak with %s", [npc_name])
+	return Loc.fill("speak with %s — %s", [npc_name, Loc.say(trade)])
+
+
 ## What this person is, in three words or fewer. The whole reason a player can use a village
 ## they have never visited.
 func role_label() -> String:

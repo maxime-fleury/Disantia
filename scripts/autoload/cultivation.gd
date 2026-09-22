@@ -160,7 +160,13 @@ func _process(delta: float) -> void:
 	# Standing in an unlocked spirit zone raises the rate qi is drawn and the rate the
 	# meters fill by the same factor, so it is genuinely "more qi per second" rather
 	# than a cheaper refinement.
-	var boost: float = maxf(0.1, zone_boost)
+	#
+	# And the *hour* multiplies the same number, because the zones breathe harder in the
+	# dark. Read from the clock here rather than folded into `zone_boost` when the zone is
+	# entered: the sun sets while a body is already sitting, and a boost captured at the
+	# moment of arrival would mean the best way to use a zone at night is to stand up and
+	# walk back into it.
+	var boost: float = maxf(0.1, zone_boost * Clock.zone_share())
 	var want: float = qi_cost_per_second() * boost * delta
 	if want <= 0.0:
 		return
@@ -285,7 +291,7 @@ func realm_name() -> String:
 
 
 func realm_label() -> String:
-	return "%s · Stage %d" % [realm_name(), stage()]
+	return Loc.fill("%s · Stage %d", [Loc.say(realm_name()), stage()])
 
 
 func refinements_missing() -> int:

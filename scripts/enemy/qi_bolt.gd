@@ -35,8 +35,17 @@ static func spawn(parent: Node, at: Vector3, direction: Vector3, damage: float,
 		return null
 	var bolt: Area3D = (preload("res://scripts/enemy/qi_bolt.gd") as GDScript).new()
 	parent.add_child(bolt)
-	var flat := Vector3(direction.x, 0.0, direction.z)
-	bolt._velocity = (flat.normalized() if flat.length_squared() > 0.0001 else Vector3.FORWARD) * speed
+	# The whole direction, not just the flat part of it.
+	#
+	# This used to keep the thrower's chest height for the bolt's entire life, which sounds
+	# harmless and is not: the Ninth is a head and a half taller than a raider, so its chest is
+	# at 1.87 m and *a player standing on the same ground as it was never hit* — the bolt passed
+	# over their head every time. The only reason it did not read as "the ranged attack does not
+	# work" is that the maps it was tried on were uneven enough to put the player a little lower
+	# than the thrower. Aimed at the body instead: the orb still crosses open ground in a
+	# near-straight line, and it arrives at what it was thrown at.
+	bolt._velocity = (direction.normalized() if direction.length_squared() > 0.0001 \
+		else Vector3.FORWARD) * speed
 	bolt._damage = damage
 	bolt._shooter = shooter
 	bolt._from_player = shooter != null and is_instance_valid(shooter) \

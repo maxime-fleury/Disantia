@@ -142,6 +142,7 @@ func _run() -> void:
 	_test_player_reads_stats()
 	_test_character()
 	_test_locomotion()
+	await _test_camera()
 	await _test_animation_states()
 	await _test_poses()
 	await _test_qi_zones()
@@ -185,10 +186,16 @@ func _run() -> void:
 	await _test_valley()
 	await _test_watch()
 	await _test_tower()
+	await _test_tower_door()
 	_test_clock()
+	await _test_night_sky()
 	_test_forge()
 	await _test_boards()
+	await _test_raids()
 	await _test_world_state_line()
+	await _test_interact_prompt()
+	await _test_voice()
+	await _test_language()
 	# Before the save round trip rather than early in the run: this section changes the world
 	# itself — a camp's raiders are spared and another camp is burned — and every test that
 	# counts raiders has already had its say by here.
@@ -199,6 +206,12 @@ func _run() -> void:
 
 func _resolve_nodes() -> void:
 	var root: Node = get_tree().root
+	# No raid is allowed to call itself during the run. The clock is real and the suite advances
+	# it — a night falls in the middle of somebody else's measurements and a squad of raiders
+	# lands in the middle of them. `_test_raids` drives the schedule explicitly, which is also
+	# the only way to check a feature whose whole subject is *when*.
+	Raids.clear()
+	Raids.last_day = Clock.day
 	_terrain = root.get_node_or_null("Main/Terrain")
 	_player = root.get_node_or_null("Main/Player")
 	_hud = root.get_node_or_null("Main/HUD")
@@ -1214,10 +1227,17 @@ func _test_ranged_bolt() -> void:
 		(_player as Node).struck.connect(func(amount: float) -> void: bolt_hits.append(amount))
 	var hp_before: float = PlayerData.get_value("hp")
 	shooter.set("_aggro", true)
-	shooter.set("_bolt_timer", 0.0)
-	var at: Vector3 = shooter.global_position + Vector3(12.0, 0.0, 0.0)
-	at.y = float(_terrain.call("surface_height_at", at.x, at.z)) + 1.4
+	var at: Vector3 = _open_shot_at(shooter.global_position, 12.0)
 	(_player as Node3D).call("warp_to", at)
+	# Landed *before* the thrower is woken up, and that ordering is the whole test.
+	#
+	# A bolt is aimed at where the body is when it leaves the hand. The player is warped a metre
+	# and a half above the ground and falls; the bolt used to be released on the first frame, at
+	# the *falling* body, and then flew over the head of the body standing where it landed. The
+	# check read "the ranged attack does not work" on a miss the test itself had arranged.
+	await _land(_player)
+	await _settle(2)
+	shooter.set("_bolt_timer", 0.0)
 	var seen: int = 0
 	for i in 160:
 		await get_tree().physics_frame
@@ -1249,16 +1269,41 @@ func _test_damage_numbers() -> void:
 	if target == null:
 		print("  info  no living raider to hit; the popup is not re-run")
 		return
-	var before: int = get_tree().get_nodes_in_group("damage_popup").size()
+	# The *new* node rather than the group's size. Counting the group made this check a claim about
+	# the whole world — "no damage number anywhere in the valley is left over" — when what is being
+	# checked is that one blow prints one number and that number clears itself up. The difference is
+	# not pedantic: something else on the map spawning a number in the same two seconds failed this
+	# check and said nothing about the popup system.
+	var before: Array = get_tree().get_nodes_in_group("damage_popup")
 	var dealt: float = float(target.call("take_hit", 12.0, _player.global_position))
 	await _settle(2)
+	var fresh: Array = []
+	for node: Node in get_tree().get_nodes_in_group("damage_popup"):
+		if not before.has(node):
+			fresh.append(node)
 	_check(dealt > 0.0, "a blow lands on a raider", "%.1f" % dealt)
-	_check(get_tree().get_nodes_in_group("damage_popup").size() == before + 1,
-		"and prints exactly one number")
+	_check(fresh.size() == 1, "and prints exactly one number", "%d new" % fresh.size())
 	# And it clears itself up, which is the only reason a node per hit is affordable.
+	var popup: Node = fresh[0] if not fresh.is_empty() else null
+	var started: int = Time.get_ticks_msec()
 	await _settle(120)
-	_check(get_tree().get_nodes_in_group("damage_popup").size() == before,
-		"and the number leaves on its own")
+	var spent: int = Time.get_ticks_msec() - started
+	# The elapsed time is in the failure line on purpose: the popup lives 0.85 *seconds* and this
+	# waits 120 *frames*, so a machine fast enough to run the headless loop under 7 ms a frame would
+	# fail the check without anything being wrong. That is worth knowing at a glance.
+	var gone: bool = popup == null or not is_instance_valid(popup)
+	_check(gone, "and the number leaves on its own",
+		"%s after 120 frames (%d ms)" % ["gone" if gone else "still there", spent])
+	# Anything else that appeared while we waited is worth saying out loud rather than failing on:
+	# a number nobody asked for is a system printing where it should be silent.
+	if gone:
+		var strangers: Array = []
+		for node: Node in get_tree().get_nodes_in_group("damage_popup"):
+			if not before.has(node) and not fresh.has(node):
+				strangers.append(node)
+		if not strangers.is_empty():
+			print("  info  %d damage number(s) from something else appeared during the wait, over %s" % [
+				strangers.size(), (strangers[0] as Node).get_parent().name])
 
 
 ## Finding one of the old places: crystals, a permanent cap, and a line on the elder's chain.
@@ -4360,6 +4405,173 @@ func _test_boards() -> void:
 ## standing in, which floor of the tower you are on, what the law wants and what it costs, and
 ## how many wounds the last fight left. The claim is not that the line is pretty — it is that a
 ## player who never opens a panel can see all four.
+## The night the valley comes for somebody.
+##
+## Four claims, and every one of them is about *time*, which is why the section drives the
+## schedule by hand instead of waiting for dusk: the clock is real and eight real minutes long
+## per night, so a suite that slept until it happened would be a suite that tests nothing else.
+##
+##   * the schedule, including the two ways it must refuse to fire;
+##   * the landing, which is the one place a raid meets the rest of the world — bodies on the road,
+##     outside the sanctuary, walking at the gate;
+##   * the two endings, which are not symmetrical: a broken squad pays, a broken gate *costs*;
+##   * and the repair, all the way through the story menu, because the price of the gate is only
+##     a design decision if there is a door that takes it.
+func _test_raids() -> void:
+	_section("The night raid")
+	if _player == null or _hud == null:
+		return
+	var entries: Array = Villages.all()
+	if entries.is_empty():
+		return
+	# The whole clock is put back at the end: this section moves the day, the hour and the
+	# village's standing, and everything after it measures a valley it expects to find.
+	var kept_day: int = Clock.day
+	var kept_minutes: float = Clock.minutes
+	var kept_last: int = Raids.last_day
+	Raids.clear()
+	Raids.sacked.clear()
+	Raids.held = 0
+	Raids.lost = 0
+	var village_id: String = String((entries[0] as Dictionary)["id"])
+	var village_name: String = String((entries[0] as Dictionary)["name"])
+
+	Clock.day = 1
+	Raids.last_day = 0
+	_check(not Raids.maybe_call(), "the first night is never a raid night")
+	Clock.day = int(Raids.NIGHT_GAP)
+	_check(Raids.maybe_call(), "three nights in, somebody is marked",
+		"%s" % Raids.warning())
+	_check(Raids.scheduled(), "and it is in progress")
+	_check(Raids.warning().contains(village_name.to_upper()), "the warning names the village",
+		Raids.warning())
+	_check(Raids.warning().contains("MARKED TONIGHT"), "and says it has not happened yet",
+		Raids.warning())
+	_check(not Raids.maybe_call(), "a second raid cannot be called on top of the first")
+	Clock.day = int(Raids.NIGHT_GAP) + 1
+	PlayerData.log_message.emit("", "info")
+	_check(Raids.warning() != "", "and the night after it is still the same raid",
+		Raids.warning())
+
+	# The landing. The bodies are the ordinary raiders the camps spawn, which is the point — a
+	# village attacked by something the player has never fought would be a cutscene with legs.
+	var size: int = int(Raids.tonight["size"])
+	_check(size >= 3, "a squad worth running for", "%d raiders" % size)
+	_check(Raids.land(), "the squad walks out of the trees")
+	_check(Raids.standing() == size, "and every one of them is on its feet",
+		"%d of %d" % [Raids.standing(), size])
+	var squad: Array = Raids.tonight["squad"]
+	var body: Node3D = squad[0] as Node3D
+	_check(body != null and body.is_in_group("enemy"), "as raiders the game already knows")
+	var outside: bool = true
+	var brawling: bool = true
+	var permanent: bool = true
+	for node: Node in squad:
+		var enemy := node as Node3D
+		if enemy == null:
+			continue
+		if Haven.contains(enemy.global_position):
+			outside = false
+		if not bool(enemy.get("brawl")):
+			brawling = false
+		# No respawn, so "the squad is broken" is a thing that can be true rather than a thing
+		# that is true for forty-five seconds.
+		if float(enemy.get("respawn_seconds")) < 100000.0:
+			permanent = false
+	_check(outside, "on the road outside the gate, where the watch can reach them")
+	_check(brawling, "and they fight what is in front of them rather than running past it")
+	_check(permanent, "and a body that goes down stays down until dawn")
+	Raids.sacked.erase(village_id)
+	_hud.call("_update_status")
+	var status: Label = _find_by_name(_hud, "StatusLabel") as Label
+	if status != null:
+		_check(status.text.contains("RAID ON"), "and the strip on screen says the fight is on",
+			status.text)
+
+	# Held: the player puts every one of them down. The village pays for it in standing, which is
+	# the only currency a raid has.
+	var before: int = Villages.rep_of(village_id)
+	for node: Node in squad.duplicate():
+		var enemy := node as Node3D
+		if enemy != null and enemy.has_method("take_hit"):
+			enemy.call("take_hit", 100000.0, _player.global_position)
+	await _settle(3)
+	_check(Villages.rep_of(village_id) >= before + Raids.FELLED_REP * size,
+		"standing with the watch is worth standing to the village",
+		"%d -> %d" % [before, Villages.rep_of(village_id)])
+	_check(Raids.held == 1 and not Raids.scheduled(), "and the squad broken ends the night")
+	_check(not Raids.is_sacked(village_id), "with the gate still standing")
+
+	# Sacked: the same raid, nobody helping, and the sun coming up on a squad that is still there.
+	Clock.day = int(Raids.NIGHT_GAP) * 2
+	Raids.last_day = 0
+	_check(Raids.maybe_call(), "a second raid, three nights later", "%s" % Raids.warning())
+	Raids.land()
+	await _settle(1)
+	Clock.skip_to_hour(6.0)
+	await _settle(3)
+	_check(Raids.is_sacked(village_id), "a squad still standing at dawn is a gate in the ground",
+		"village %s" % village_id)
+	_check(Raids.lost == 1 and not Raids.scheduled(), "and nothing left in the road")
+	var cost: int = Raids.repair_cost(village_id)
+	_check(cost == Raids.REPAIR_BASE + Raids.REPAIR_STEP, "at a price that has gone up once",
+		"%d crystals" % cost)
+	var stock: Dictionary = Villages.shelf(village_id)
+	_check((stock["pieces"] as Array).is_empty() and (stock["consumables"] as Array).is_empty(),
+		"and no market in a village with no gate", "%d wares" % (stock["pieces"] as Array).size())
+	_hud.call("_update_status")
+	if status != null:
+		_check(status.text.contains("IS OPEN"), "which the strip says in those words",
+			status.text)
+
+	# The map, which is where a warning is worth the most: which village, and is it still open.
+	var view: Control = _find_by_name(_hud, "MapView") as Control
+	if view != null and view.has_method("village_marks"):
+		var marks: Array = view.call("village_marks")
+		_check(marks.size() == Villages.all().size(), "the map marks every village",
+			"%d of %d" % [marks.size(), Villages.all().size()])
+		var broken: int = 0
+		for mark: Dictionary in marks:
+			if bool(mark["sacked"]):
+				broken += 1
+		_check(broken == 1, "and shows exactly the one that is open", "%d" % broken)
+
+	# And the door that takes the crystals. Any door in the square, because the village's business
+	# is everybody's business when the gate is down — so this walks the keeper's, which is the one
+	# a player would try first.
+	var keeper: String = ""
+	for person: Dictionary in Villages.people_of(village_id):
+		if String(person["role"]) == "keeper":
+			keeper = String(person["id"])
+	_check(keeper != "", "the village has somebody who speaks for it")
+	if keeper != "":
+		PlayerData.add_crystals(cost)
+		var speech: Dictionary = Story.begin(keeper)
+		var options: Array = (speech.get("options", []) as Array)
+		var offers: bool = false
+		for option: Dictionary in options:
+			if String(option.get("key", "")) == "mend":
+				offers = true
+		_check(offers, "and offers to mend the gate", "%d options" % options.size())
+		var paid: int = PlayerData.crystals
+		var line: String = String(Story.choose("mend").get("line", ""))
+		_check(line != "", "which is paid for out loud", line)
+		_check(PlayerData.crystals == paid - cost, "for exactly what it said",
+			"%d -> %d" % [paid, PlayerData.crystals])
+		_check(not Raids.is_sacked(village_id), "and the gate goes back up")
+		_check(not (Villages.shelf(village_id)["pieces"] as Array).is_empty(),
+			"so the stalls open again")
+		Story.close()
+
+	# Back to the valley the rest of the suite expects.
+	Raids.clear()
+	Raids.sacked.clear()
+	Raids.last_day = kept_last
+	Clock.day = kept_day
+	Clock.minutes = kept_minutes
+	await _settle(1)
+
+
 func _test_world_state_line() -> void:
 	_section("World state line")
 	if _hud == null or _player == null:
@@ -4422,9 +4634,124 @@ func _test_world_state_line() -> void:
 		"%d" % PlayerData.wounds)
 	PlayerData.clear_wounds()
 
+	# And a raid, which is the one line on screen that is asking the player to *move*. It is
+	# stated on this strip rather than only in the log because the log scrolls and a village does
+	# not stop burning when it does.
+	var raid_village: String = String((Villages.all()[0] as Dictionary)["id"])
+	if Raids.call_raid(raid_village, 4, Raids.LAND_HOUR):
+		_hud.call("_update_status")
+		_check(label.text.contains("MARKED TONIGHT"), "and calls out the village marked tonight",
+			label.text)
+		Raids.clear()
+		# And left quiet: the sweep is over, and the suite's remaining sections are not about a
+		# village under attack.
+		Raids.last_day = Clock.day
+
 	_player.call("warp_to", kept)
 	await _land(_player)
 	_hud.call("_update_status")
+
+
+## Which language the valley speaks, and what a half-filled table does to the game.
+##
+## Five claims, and the fourth is the one that matters most: a sentence with no row must come out
+## **English**, unchanged, because that is what makes this table something that can be filled in a
+## hundred rows at a time rather than a switch that half-blanks the interface the moment it is
+## thrown.
+##
+## The end-to-end part is the status strip. Everything else on screen is translated by the engine
+## on its way to the pixels — a `Control` whose text is a row is translated with no code involved
+## at all, which is the whole reason the table lives in Godot's own server — but the strip is
+## built by hand in `_update_status`, so it is the one place where a mistake in the wiring can be
+## seen from a test.
+func _test_language() -> void:
+	_section("Language")
+	if _hud == null:
+		return
+	var kept: int = Loc.language
+	_check(Loc.code() == "en" and TranslationServer.get_locale().begins_with("en"),
+		"the valley starts in English", Loc.code())
+	Loc.set_language(1)
+	_check(Loc.is_french(), "and speaks French when it is asked to", Loc.code())
+	_check(TranslationServer.get_loaded_locales().has("fr"), "with the table installed",
+		str(TranslationServer.get_loaded_locales()))
+	_check(Loc.say("Another time") == "Une autre fois", "a row comes back translated",
+		Loc.say("Another time"))
+	# The fallback. A line with no row is the line, not a blank and not an error.
+	_check(Loc.say("this sentence has no row at all") == "this sentence has no row at all",
+		"and a line with no row stays exactly as it was")
+	# The rule that makes placeholders safe in a language that orders them differently: the
+	# template is looked up *before* the values are substituted.
+	# Note the `Loc.say` around the *value* as well as the template. `fill` translates the
+	# template and substitutes what it is given — it does not reach into the values and translate
+	# them too, because a value is as likely to be a number, a proper noun or a player's name as
+	# it is to be a sentence. Every caller that passes a translatable phrase wraps it itself, and
+	# this check exists so that rule is written down somewhere.
+	_check(Loc.fill("%s · Stage %d", [Loc.say("Body Tempering"), 3])
+			== "Trempe du Corps · Palier 3",
+		"and a template is translated before the numbers go in",
+		Loc.fill("%s · Stage %d", [Loc.say("Body Tempering"), 3]))
+
+	# Every row, checked for the one mistake a translated format string can make: a placeholder
+	# that went missing or changed kind. `"%s - dormant, needs %d"` with a French row that says
+	# `%s` twice is not a typo, it is a crash in the middle of a conversation with a player - and
+	# it happens in the one file no compiler ever reads.
+	var table: Dictionary = preload(Loc.FRENCH_PATH).TABLE
+	var broken: Array = []
+	for english: String in table:
+		if _placeholders(english) != _placeholders(String(table[english])):
+			broken.append("%s -> %s" % [english, String(table[english])])
+	_check(broken.is_empty(), "and no row loses or changes a placeholder",
+		"%d of %d rows, first: %s" % [broken.size(), table.size(), broken[0] if broken else "-"])
+
+	var label: Label = _find_by_name(_hud, "StatusLabel") as Label
+	if label != null:
+		_hud.call("_update_status")
+		_check(label.text.contains("Déplacements"),
+			"the control strip is translated with it", label.text)
+	# The panel the choice is made in: one row, two buttons, and the one in force is the one
+	# that is not pressable.
+	_check(_find_by_name(_hud, "LanguageRow") != null, "the settings panel offers the choice")
+	var buttons: Array = _hud.get("_language_buttons")
+	if buttons.size() == 2:
+		_check(bool((buttons[1] as Button).disabled) and not bool((buttons[0] as Button).disabled),
+			"and lights the one in force")
+
+	# The other decision on that panel that is about how the game is *read* rather than what it
+	# is, and the same shape: two buttons, the one in force lit.
+	Voice.set_enabled(true)
+	_check(_find_by_name(_hud, "VoiceRow") != null, "and the voices can be turned off there")
+	var voices: Array = _hud.get("_voice_buttons")
+	if voices.size() == 2:
+		_check(bool((voices[0] as Button).disabled) and not bool((voices[1] as Button).disabled),
+			"with the one in force lit, like the language")
+
+	Loc.set_language(0)
+	_check(not TranslationServer.get_loaded_locales().has("fr"),
+		"the table comes back out on the way to English",
+		str(TranslationServer.get_loaded_locales()))
+	if label != null:
+		_hud.call("_update_status")
+		_check(label.text.contains("WASD move"), "and the strip is English again", label.text)
+
+	# And the choice is a save rather than a session: it is in the module contract like the
+	# villages and the clock, so it is one row in `SAVE_MODULES` and nothing else.
+	Loc.set_language(1)
+	_check(int(Loc.save_data()["language"]) == 1, "and the choice is what gets written down")
+	Loc.set_language(kept)
+	_check(PlayerData.SAVE_MODULES.has("loc"), "and it lives in the save with everything else")
+
+
+## The format placeholders in a string, in order: `%s`, `%d`, `%.1f`, `%02d`. Sorted, because a
+## French sentence is free to move them around - it is not free to drop one.
+func _placeholders(text: String) -> Array:
+	var found: Array = []
+	var pattern := RegEx.new()
+	pattern.compile("%[-+0#]*[0-9]*(?:\\.[0-9]+)?[sdfxX]")
+	for hit: RegExMatch in pattern.search_all(text):
+		found.append(hit.get_string())
+	found.sort()
+	return found
 
 
 func _test_people() -> void:
@@ -4554,8 +4881,15 @@ func _test_people() -> void:
 	# Xia will not raise the raiders with you until your hands have learned something — the
 	# gate is on a technique attained rather than on a level, because a door nobody can read
 	# is a door with no handle.
+	# Asked of a body with nothing attained, which is what the gate is *about*. By this point in
+	# the run the suite has handed the body caps for two hundred checks, and whether the last of
+	# them crossed a threshold is a fact about the world's layout — a champion three sections ago
+	# dropped a different material, the forge ground a different edge, and the same grant landed a
+	# fifth of a point over the line. Reading the gate off that state is reading the suite.
+	var caps_before: Dictionary = _strip_attainments()
 	Story.begin("xia")
-	_check(Story.options().is_empty(), "Xia holds the camp question back from a fresh body")
+	_check(Story.options().is_empty(), "Xia holds the camp question back from a fresh body",
+		"%d attained (%s)" % [PlayerData.attained_count(), ", ".join(_attained_labels())])
 	Story.close()
 	PlayerData.grant_cap("body", 5.0)
 	_check(PlayerData.attained_count() >= 1, "one technique is enough to have earned an opinion",
@@ -4571,6 +4905,11 @@ func _test_people() -> void:
 		"and a camp that is spared is a debt the body carries",
 		"DEFENSE %.1f -> %.1f" % [defense_before, PlayerData.get_cap("defense")])
 	Story.close()
+	# The body goes back the way the section found it before the fighting starts: the raider
+	# checks below need a body that can stand up, and a stripped cap would have squeezed its
+	# health out from under it while the gate was being read.
+	_restore_caps(caps_before)
+	PlayerData.restore_all()
 	var spared: String = PlayerData.decision_subject("camp")
 	if camps != null:
 		var spared_camp: Dictionary = {}
@@ -5275,31 +5614,49 @@ func _test_attainments() -> void:
 		"%.1f hp" % ten_soft)
 
 	# METEOR: a landing that moves everything standing near it, and nothing further away.
-	var raiders: Array = []
-	var camps_node: Node = get_tree().root.get_node_or_null("Main/EnemyCamps")
-	if camps_node != null and camps_node.has_method("enemies"):
-		raiders = camps_node.call("enemies")
 	_set_cap("jump", 16.01)
 	_check(PlayerData.has_effect("meteor"), "METEOR at ten times the starting jump")
 	_check(_near(PlayerData.stagger_radius(), 3.5, 0.01), "its shockwave reaches three and a half metres")
-	if raiders.size() >= 2:
-		var near_raider := raiders[0] as CharacterBody3D
-		var far_raider := raiders[1] as CharacterBody3D
-		var spot: Vector3 = _flat_ground_near(_player as Node3D)
-		# The two raiders are stood where the landing can and cannot reach them. They are
-		# placed rather than found, because a raider that happens to be walking through the
-		# spot proves nothing about the radius.
-		near_raider.global_position = spot + Vector3(1.5, 0.6, 0.0)
-		far_raider.global_position = spot + Vector3(8.0, 0.6, 0.0)
+	# Two bodies of the test's own rather than two out of a camp.
+	#
+	# The claim is about the *radius* — one body inside it, one outside — and a camp's raiders
+	# arrive with a history: an earlier section may have killed one (a body that is down staggers
+	# for nobody), staggered it, or left it chasing something across the map, and the check then
+	# reads the camp's bookkeeping instead of the landing. This was failing exactly that way: the
+	# body was 1.5 m away, where it had been put, and already on the ground.
+	#
+	# Born on the spot, at full health, with no aggro at all (a body that fights back during the
+	# fall is a body that is not where it was put), and taken away at the end.
+	var factory = preload("res://scripts/enemy/enemy_factory.gd")
+	var spot: Vector3 = _flat_ground_near(_player as Node3D)
+	var placed: Array = []
+	for entry: Array in [[Vector3(1.5, 0.6, 0.0), "MeteorNear"], [Vector3(8.0, 0.6, 0.0), "MeteorFar"]]:
+		var at: Vector3 = spot + (entry[0] as Vector3)
+		var body: CharacterBody3D = factory.make(1.0, String(entry[1]))
+		factory.configure(body, 400.0, 0.0, 0, at, Color("b4553c"), 0.0, 1.0, 0.0)
+		body.set("respawn_seconds", INF)
+		(_player as Node).get_parent().add_child(body)
+		body.global_position = at
+		placed.append(body)
+	if placed.size() == 2:
+		var near_raider := placed[0] as CharacterBody3D
+		var far_raider := placed[1] as CharacterBody3D
 		PlayerData.stats["hp"]["current"] = PlayerData.get_cap("hp")
 		_player.call("warp_to", spot + Vector3(0.0, 7.0, 0.0))
 		await _land(_player)
 		await _settle(2)
-		_check(float(near_raider.call("stagger_left")) > 0.0,
+		var stagger: float = float(near_raider.call("stagger_left"))
+		var gap: Vector3 = near_raider.global_position - (_player as Node3D).global_position
+		gap.y = 0.0
+		_check(stagger > 0.0,
 			"a hard landing knocks a raider beside it off its feet",
-			"%.2fs" % float(near_raider.call("stagger_left")))
+			"%.2fs, standing %.1f m away, fell %.1f m" % [
+				stagger, gap.length(), spot.y + 7.0 - (_player as Node3D).global_position.y])
 		_check(float(far_raider.call("stagger_left")) == 0.0,
 			"and one eight metres away does not notice")
+		for body: Node in placed:
+			body.queue_free()
+		await _settle(2)
 
 	# SKY STEP, which is the only entry that adds a jump rather than changing one.
 	_set_cap("jump", 1.6)
@@ -6091,6 +6448,40 @@ func _test_slopes() -> void:
 
 ## Walks `candidates` from `index` in `direction` and returns the first whose lane is
 ## clear for the whole run.
+## A spot `distance` metres from a body with a clear line of flight back to it.
+##
+## The bolt test used to stand at a fixed twelve metres east, which is a coin flip on a terrain
+## seed: the valley was regenerated larger, the ground east of the Ninth rose by about a metre,
+## and the bolt buried itself in a hill instead of in the player. What is being checked is "a bolt
+## that *reaches* the body hurts it", so the test is allowed to stand where one reaches.
+func _open_shot_at(from: Vector3, distance: float) -> Vector3:
+	var best: Vector3 = from + Vector3(distance, 0.0, 0.0)
+	var best_poke: float = INF
+	for i in 24:
+		var angle: float = TAU * float(i) / 24.0
+		var spot := from + Vector3(cos(angle) * distance, 0.0, sin(angle) * distance)
+		spot.y = float(_terrain.call("surface_height_at", spot.x, spot.z)) + 1.4
+		# The most the ground pokes into the line between one chest and the other. The lowest
+		# poke wins, which is the clearest shot in the ring.
+		var poke: float = -INF
+		for k in 7:
+			var t: float = float(k) / 6.0
+			var x: float = lerpf(from.x, spot.x, t)
+			var z: float = lerpf(from.z, spot.z, t)
+			var line: float = lerpf(from.y + 1.2, spot.y + 0.9, t)
+			poke = maxf(poke, float(_terrain.call("surface_height_at", x, z)) - line)
+		# And the *height*, because a bolt flies flat. It leaves the thrower's chest and keeps
+		# that height for its whole life, so a spot twelve metres away that is three metres
+		# lower is a spot the bolt sails over — which is the second half of why this test used
+		# to be a coin flip on the seed. A metre of leeway either way, which is a body's worth.
+		var height_gap: float = maxf(0.0, absf(spot.y - 1.4 - (from.y - 1.2)) - 1.0)
+		var score: float = maxf(poke, height_gap)
+		if score < best_poke:
+			best_poke = score
+			best = spot
+	return best
+
+
 func _first_clear(candidates: Array, index: int, direction: int, forward: Vector3,
 		lane: float, require_level: bool = true) -> Dictionary:
 	var i: int = index
@@ -6101,8 +6492,11 @@ func _first_clear(candidates: Array, index: int, direction: int, forward: Vector
 	var walled: int = 0
 	# Two hundred and forty, because the *steepest* ground on a heightmap is a cliff face — and a
 	# cliff face passes none of these probes, being a wall. Sixty candidates was enough while the
-	# map was small; on this one the whole of the top of the order is rock.
-	while i >= 0 and i < candidates.size() and tried < 240:
+	# map was small; on this one the whole of the top of the order is rock — and on the map after
+	# *that* it is rock with trees in it, since the valley grew and the steepest grades picked up
+	# a trunk or two apiece. Four hundred keeps the claim (a real grade, clear for sixteen metres)
+	# while letting the search walk far enough down the order to find one.
+	while i >= 0 and i < candidates.size() and tried < 400:
 		var entry: Dictionary = candidates[i]
 		var spot := Vector3(float(entry["x"]), 0.0, float(entry["z"]))
 		spot.y = float(_terrain.call("surface_height_at", spot.x, spot.z)) + 0.9
@@ -6278,6 +6672,10 @@ func _run_grade(entry: Dictionary, forward: Vector3) -> Dictionary:
 ## Puts the player's real save back, so running the suite is never destructive.
 func _restore_player_state() -> void:
 	_section("Cleanup")
+	# The suite's own save file is taken away whatever happened. It is not the player's — see
+	# `PlayerData.SELFTEST_SAVE_PATH` — and leaving it behind would be litter that looks exactly
+	# like a save file the next time somebody goes looking for one.
+	_remove(PlayerData.SELFTEST_SAVE_PATH)
 	if _had_save:
 		_check(_copy(BACKUP_PATH, SAVE_PATH), "existing save file restored")
 		_remove(BACKUP_PATH)
@@ -6288,3 +6686,391 @@ func _restore_player_state() -> void:
 	PlayerData.gain_coefficient = 1.0
 	_remove(BACKUP_PATH)
 	_check(not FileAccess.file_exists(SAVE_PATH), "no save file left behind for a fresh start")
+
+
+# --------------------------------------------------------- the camera, the door, the sky
+
+## The camera, against the bug the player reported: *when I jump it zooms on my character a bit*.
+##
+## The cause was a spring arm against the ground. The arm hangs off the body and casts out and
+## down; the terrain is one enormous static body under every angle below the horizon, so the arm
+## spent its whole life shortened against it — and the moment the body was in the air, with the
+## ground falling away behind, the length crawled back out and the camera lurched in and out.
+##
+## So this checks the decision — the arm collides with nothing — and then the shape the decision
+## is for: the distance from the body to the camera, at rest and through a jump. A camera may
+## *lag* a jump (one welded to the body is its own bug), but it must never close in on the
+## character. The mask is the check that actually reproduces the bug: flipping it back to 1 and
+## re-running this section fails on that line and on nothing else, because on level ground the
+## arm's cast is short and upward and the geometry alone does not get in its way.
+func _test_camera() -> void:
+	_section("The camera")
+	if _player == null:
+		return
+	var rig: Node3D = (_player as Node3D).get_node_or_null("CameraRig") as Node3D
+	var arm: SpringArm3D = (_player as Node3D).get_node_or_null(
+		"CameraRig/SpringArm3D") as SpringArm3D
+	var camera: Camera3D = (_player as Node3D).get_viewport().get_camera_3d()
+	_check(rig != null and arm != null and camera != null, "the body has a rig, an arm and a camera")
+	if rig == null or arm == null or camera == null:
+		return
+	# The decision itself, checked as a decision. A wall behind the camera is worth less than a
+	# camera that will not back off, and this one bit of the scene is the whole fix.
+	_check(arm.collision_mask == 0, "and the arm collides with nothing at all",
+		"mask %d" % arm.collision_mask)
+
+	Story.close()
+	# Jumping is locomotion and locomotion trains SPEED, so this section can hand the body a cap
+	# it did not have. Snapshot and put back: a suite that quietly improves the save it is
+	# measuring turns every later check into a check about this one.
+	var caps: Dictionary = _caps_now()
+	(_player as Node3D).call("warp_to", _terrain.call("spawn_point", 0.5))
+	await _settle(8)
+	var ground_y: float = (_player as Node3D).global_position.y
+	var rest: float = camera.global_position.distance_to((_player as Node3D).global_position)
+	var span_before: float = arm.spring_length
+
+	# Up, and stay up: the apex is where the ground behind the camera is furthest away, which is
+	# the frame the old arm snapped back to full length on.
+	Input.action_press("jump")
+	await _settle(1)
+	Input.action_release("jump")
+	var apex: float = ground_y
+	var closest: float = rest
+	for i in 150:
+		await get_tree().physics_frame
+		var body := _player as Node3D
+		apex = maxf(apex, body.global_position.y)
+		closest = minf(closest, camera.global_position.distance_to(body.global_position))
+	_check(apex > ground_y + 0.6, "the body leaves the ground when the key says so",
+		"%.2f m up" % (apex - ground_y))
+	# Both readings, because they fail differently: the spring length is what the cast was doing,
+	# and the distance to the body is what a player watching the screen sees.
+	_check(absf(arm.spring_length - span_before) < 0.05,
+		"and the arm keeps its length all the way through",
+		"%.2f m on the ground, %.2f m in the air" % [span_before, arm.spring_length])
+	_check(rest - closest < 0.5, "so the camera never closes in on the character",
+		"%.2f m at rest, %.2f m at its nearest" % [rest, closest])
+	await _settle(8)
+	# Last, after the body has stopped moving: a cap handed over during these frames has to be
+	# handed back too, or the leak survives the section that caused it.
+	_restore_caps(caps)
+
+
+## The tower's door, as the player meets it: from outside, with the key they actually press.
+##
+## Everything about the tower was tested by calling `Tower.enter` directly — composition, curve,
+## record, the walk in and out — and *nothing* tested the path from a keypress to that call. That
+## is how a hundred floors of built, composed, green-tested content ended up unreachable: the
+## player reported "you cannot get into the tower" and every check in this file was passing.
+func _test_tower_door() -> void:
+	_section("The tower's door")
+	var site: Node = get_tree().get_first_node_in_group("tower_site")
+	if site == null or _player == null:
+		return
+	Story.close()
+	Tower.leave("a test")
+	# A wave is standing on the ground floor, and a raider that dies in front of the player pays a
+	# cap — which is an attainment the moment it crosses a threshold. This is not hypothetical: it
+	# is how this section first failed, four sections later, as "Xia holds the camp question back
+	# from a fresh body" going red because the body was no longer fresh.
+	var caps: Dictionary = _caps_now()
+	var door: Node3D = site.get_node_or_null("Doorway") as Node3D
+	_check(door != null, "the tower has a door to stand at")
+	if door == null:
+		return
+	# Stand where a player stands: on the ground outside the door, not at its centre height.
+	var outside: Vector3 = door.global_position
+	outside.y = float(_terrain.call("surface_height_at", outside.x, outside.z)) + 0.6
+	(_player as Node3D).call("warp_to", outside)
+	await _settle(6)
+	_check(Tower.unlocked() or Tower.locked_reason() != "",
+		"the door either opens or says what it is waiting for")
+	_press_key(KEY_E)
+	await _settle(5)
+	_check(Story.talking(), "the interact key at the door opens the door",
+		String(_hud.call("_context_line")))
+	if not Story.talking():
+		return
+	_check(String(Story.conversation().get("speaker", "")) == "The Tower's Door",
+		"and the thing that answers is the tower", String(Story.conversation().get("speaker", "")))
+	var way_in: Dictionary = {}
+	for option: Dictionary in Story.options():
+		if String((option.get("effect", {}) as Dictionary).get("kind", "")) == "tower_enter":
+			way_in = option
+			break
+	if not Tower.unlocked():
+		_check(way_in.is_empty(), "and a locked door offers no way in",
+			"%d options" % Story.options().size())
+		Story.close()
+		return
+	_check(not way_in.is_empty(), "and it offers the way in",
+		"%d options" % Story.options().size())
+	if not way_in.is_empty():
+		Story.choose(String(way_in["key"]))
+		_check(Tower.inside(), "choosing it puts the body inside the tower",
+			"floor %d" % Tower.current)
+		# The arena is moved to the floor by the tower's own `_process`, which is the right place
+		# for it and one frame behind this call. Awaited rather than assumed: reading it back on
+		# the same frame reads the *previous* floor, which is how this check first failed.
+		await _settle(3)
+		_check(int(site.call("stage_floor")) == Tower.current,
+			"and the arena the body is standing in is the floor it asked for",
+			"arena on %d, body on %d" % [int(site.call("stage_floor")), Tower.current])
+	# Out again, and the world is where it was: the door is how a run ends as well as begins.
+	site.call("step_out")
+	Story.close()
+	await _settle(2)
+	_check(not Tower.inside(), "and stepping out leaves the tower behind")
+	# Last, and after the frames: what is left of the wave is still standing in the arena the body
+	# walked out of, and anything that dies in those frames pays a cap.
+	_restore_caps(caps)
+
+
+## The stars, and the moon among them.
+##
+## The valley had a sky that went black at night, which is the correct colour and not the same
+## thing as a sky. Nothing about the day is allowed to change: the dome is checked to be
+## invisible at noon and visible at midnight, because "the stars are up at lunchtime" is the one
+## way this feature can be worse than not existing.
+func _test_night_sky() -> void:
+	_section("The night sky")
+	var dome: MeshInstance3D = get_tree().root.get_node_or_null("Main/NightSky") as MeshInstance3D
+	_check(dome != null, "there is a sky over the valley")
+	if dome == null:
+		return
+	_check(dome.cast_shadow == GeometryInstance3D.SHADOW_CASTING_SETTING_OFF,
+		"which casts no shadow", "%d" % dome.cast_shadow)
+	var material: ShaderMaterial = (dome.mesh as SphereMesh).material as ShaderMaterial
+	_check(material != null and material.shader != null, "and is drawn by its own shader")
+	if material == null or not dome.has_method("sky_at"):
+		return
+	# The clock drives the stars, so the check is done through the clock rather than by poking
+	# the uniform: what has to be true is that *the hour* decides, not that a number is settable.
+	var noon: Dictionary = dome.call("sky_at", 13.0)
+	var midnight: Dictionary = dome.call("sky_at", 0.0)
+	_check(float(noon["night"]) < 0.02, "nothing shows at noon",
+		"%.3f at 13:00" % float(noon["night"]))
+	_check(float(midnight["night"]) > 0.9, "and the stars are up at midnight",
+		"%.3f at 00:00" % float(midnight["night"]))
+	# The moon is opposite the sun, which is the only arrangement in which both are in the sky at
+	# once the way they are supposed to be — and the only one that cannot put the moon *behind*
+	# the sun, which is what a second light in the east would have done.
+	for hour: float in [22.0, 2.0, 4.0]:
+		var sky: Dictionary = dome.call("sky_at", hour)
+		var moon: Vector3 = sky["moon"]
+		var sun: Vector3 = sky["sun"]
+		_check(moon.dot(sun) < -0.99, "the moon is opposite the sun at %.0f:00" % hour,
+			"moon %.2f vs sun %.2f" % [moon.y, sun.y])
+		# Opposite is not enough: a moon below the horizon is a moon nobody sees, and the sign
+		# of a basis is exactly the kind of thing that gets flipped by a tidy-up.
+		_check(moon.y > 0.3 and sun.y < -0.3, "and it is the one above the valley at %.0f:00" % hour,
+			"moon %.2f, sun %.2f" % [moon.y, sun.y])
+	_check(float((dome.call("sky_at", 13.0) as Dictionary)["moon"].y) < -0.3,
+		"while at noon it is the sun that is up")
+
+
+## The interact prompt: the line that tells the player a key does something here.
+##
+## It is one line and it fixed the most expensive omission in the project.
+func _test_interact_prompt() -> void:
+	_section("The interact prompt")
+	if _player == null or _hud == null:
+		return
+	if not _hud.has_method("_context_line"):
+		_check(false, "the interface can ask the world what the key would do")
+		return
+	# Somewhere with nothing to press. *Found* rather than assumed: the camp has two people
+	# standing in it, so "the middle of the camp" is the one place in the valley that is
+	# guaranteed to have something to talk to — which is how the first version of this check
+	# failed, and worth four lines to get right rather than guessing again the next time somebody
+	# moves a village.
+	Story.close()
+	var quiet: Vector3 = Vector3.ZERO
+	var room: float = -1.0
+	for i in 36:
+		var angle: float = TAU * float(i) / 36.0
+		var at := Vector3(cos(angle) * 60.0, 0.0, sin(angle) * 60.0)
+		var clear: float = _clearance(at)
+		if clear > room:
+			room = clear
+			quiet = at
+	_check(room > 12.0, "there is ground nobody is standing on",
+		"%.0f m to the nearest thing that answers to the key" % room)
+	quiet.y = float(_terrain.call("surface_height_at", quiet.x, quiet.z)) + 1.0
+	(_player as Node3D).call("warp_to", quiet)
+	await _settle(6)
+	_check(String(_hud.call("_context_line")) == "", "and out there the line says nothing",
+		String(_hud.call("_context_line")))
+
+	# Somebody to press it at. The nearest one wins, which is the whole rule — and nothing here
+	# touches a conversation, because this section is about the *line* and a check that also
+	# talked to somebody would be a section that changes the world it is measuring.
+	var npc: Node3D = get_tree().get_first_node_in_group("village_npc") as Node3D
+	if npc == null:
+		_check(false, "there is somebody in the world to speak to")
+		return
+	(_player as Node3D).call("warp_to", npc.global_position + Vector3(1.6, 0.6, 0.0))
+	await _settle(6)
+	var line: String = String(_hud.call("_context_line"))
+	_check(line.begins_with("E"), "standing at somebody, the line names the key", line)
+	_check(line.contains("speak with"), "and what it does", line)
+
+	# And the same line at the tower's door, from the ground a player walks in on: the one place
+	# in the world where not having it cost the player a whole feature.
+	var site: Node = get_tree().get_first_node_in_group("tower_site")
+	var door: Node3D = null
+	if site != null:
+		door = site.get_node_or_null("Doorway") as Node3D
+	if door != null:
+		Tower.leave("a test")
+		var outside: Vector3 = door.global_position
+		outside.y = float(_terrain.call("surface_height_at", outside.x, outside.z)) + 0.6
+		(_player as Node3D).call("warp_to", outside)
+		await _settle(6)
+		_check(String(_hud.call("_context_line")) == "E — the tower's door",
+			"and at the tower's door it names the door", String(_hud.call("_context_line")))
+	await _settle(2)
+
+
+## Puts every attainment in the game out of reach, and hands back the caps it took to do it.
+##
+## The gate on Xia's question is "have you attained anything", and a suite that has been raising
+## caps for two hundred checks cannot answer it by looking at the body it has been training.
+func _strip_attainments() -> Dictionary:
+	var was: Dictionary = _caps_now()
+	for stat_id: String in PlayerData.STAT_ORDER:
+		var low: float = INF
+		for row: Dictionary in (PlayerData.ATTAINMENTS.get(stat_id, []) as Array):
+			low = minf(low, PlayerData.threshold(stat_id, row))
+		if low == INF or not PlayerData.stats.has(stat_id):
+			continue
+		PlayerData.stats[stat_id]["cap"] = low - 0.01
+	return was
+
+
+## The voices.
+##
+## Three claims. That the table the game ships points at files that are actually on disk, which
+## is the one failure mode a generated table has and the one nobody notices until a character
+## opens their mouth in a silent room. That a conversation *says* its line, through the listener
+## rather than through a call somebody has to remember. And that the language of the recording
+## follows the language of the interface rather than the language of the recording studio.
+func _test_voice() -> void:
+	_section("The voices")
+	var summary: Dictionary = Voice.summary()
+	_check(int(summary["lines"]) >= 40, "there is a corpus of spoken lines",
+		"%d lines, %d in English, %d in French" % [summary["lines"], summary["english"],
+			summary["french"]])
+	_check(int(summary["english"]) == int(summary["lines"]),
+		"and every line has an English take, because English is the written language",
+		"%d of %d" % [summary["english"], summary["lines"]])
+
+	# Every path in the table, followed. A generated table is a list of filenames, and the whole
+	# failure mode of a list of filenames is one of them not being there.
+	var table: Dictionary = preload("res://scripts/autoload/voice_table.gd").TABLE
+	var missing: Array = []
+	var takes: int = 0
+	for line: String in table:
+		for language: String in (table[line] as Dictionary):
+			takes += 1
+			var path: String = String((table[line] as Dictionary)[language])
+			if not ResourceLoader.exists(path):
+				missing.append(path)
+	_check(missing.is_empty(), "and every file it names is on disk",
+		"%d of %d missing, first %s" % [missing.size(), takes, missing[0] if missing else "-"])
+	_check(takes > int(summary["lines"]), "with some lines recorded in both languages",
+		"%d takes for %d lines" % [takes, summary["lines"]])
+
+	# A line with no recording is silent and says so, rather than throwing or playing nothing at
+	# the volume of a mistake. Most of what the game prints is dynamic and will never be recorded.
+	var unrecorded: String = "A line nobody recorded, %d crystals, and a number in it." % 7
+	_check(Voice.take_for(unrecorded) == "", "a line with no recording has no take",
+		Voice.take_for(unrecorded))
+	_check(not Voice.speak(unrecorded), "and speaking it is a no rather than an error")
+
+	# The one line every player hears first: the firekeeper's, or whoever is nearest to it.
+	var spoken: String = ""
+	for line: String in table:
+		if (table[line] as Dictionary).has("fr"):
+			spoken = line
+			break
+	_check(spoken != "", "a line recorded in both languages is in the table")
+	if spoken == "":
+		return
+	var kept: int = Loc.language
+	Loc.set_language(0)
+	var english: String = Voice.take_for(spoken)
+	_check(english.begins_with("res://assets/voice/en/"),
+		"in English the English take plays", english)
+	Loc.set_language(1)
+	var french: String = Voice.take_for(spoken)
+	_check(french.begins_with("res://assets/voice/fr/"),
+		"and in French, the French one", french)
+	Loc.set_language(kept)
+
+	# And a conversation says it, without anybody having to remember to ask. This goes through the
+	# listener on `conversation_changed`, which is the whole reason it cannot be forgotten.
+	Voice.stop()
+	Voice.set_enabled(true)
+	Story.begin("ren")
+	await _settle(2)
+	var said: String = String(Story.conversation().get("line", ""))
+	if Voice.takes(said).is_empty():
+		_check(not Voice.is_playing(), "a line nobody recorded is said in silence")
+	else:
+		_check(Voice.summary()["saying"] == said,
+			"and the line on the band is the line being said", String(Voice.summary()["saying"]))
+	Story.close()
+	await _settle(2)
+	_check(not Voice.is_playing() or Voice.summary()["saying"] == "",
+		"stepping away stops the voice")
+
+	# Off is off, and it is remembered: a player who does not want to be read to should not have to
+	# say so twice.
+	Voice.set_enabled(false)
+	_check(Voice.speak(spoken) and not Voice.is_playing(),
+		"with the voices off the line is accepted and not played")
+	Voice.set_enabled(true)
+	_check(int(Voice.save_data()["enabled"]) == 1, "and the choice is what gets written down")
+	Voice.stop()
+
+
+## The techniques a body has actually attained, by name. Read off the same rows the panel shows,
+## so a failure about attainments talks about the ones the player can see.
+func _attained_labels() -> Array:
+	var out: Array = []
+	for row: Dictionary in PlayerData.attainment_rows():
+		if bool(row["attained"]):
+			out.append(String(row["label"]))
+	return out
+
+
+## The cap of every stat, as it stands, so a section that trains or fights can hand the body back
+## the way it found it.
+func _caps_now() -> Dictionary:
+	var out: Dictionary = {}
+	for stat_id: String in PlayerData.STAT_ORDER:
+		out[stat_id] = PlayerData.get_cap(stat_id)
+	return out
+
+
+## Puts those caps back. Only the caps: what was *spent* is a detail of the check that spent it,
+## and the spirit of this is that the world forgives the measurement, not that nothing happened.
+func _restore_caps(snapshot: Dictionary) -> void:
+	for stat_id: String in snapshot:
+		if PlayerData.stats.has(stat_id):
+			PlayerData.stats[stat_id]["cap"] = float(snapshot[stat_id])
+
+
+## How far the nearest thing the interact key answers to stands from a point on the map.
+## Flat, like the prompt itself: an elder on a rock is not nearer than a door down a slope.
+func _clearance(at: Vector3) -> float:
+	var nearest: float = INF
+	for node: Node in get_tree().get_nodes_in_group("interactable"):
+		if node is not Node3D:
+			continue
+		var away: Vector3 = (node as Node3D).global_position - at
+		away.y = 0.0
+		nearest = minf(nearest, away.length())
+	return nearest

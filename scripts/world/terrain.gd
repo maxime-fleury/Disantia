@@ -20,7 +20,7 @@ enum CollisionMode {
 	TRIMESH,   ## Exact match to the rendered triangles. More expensive.
 }
 
-@export var grid: int = 320:
+@export var grid: int = 512:
 	set(value):
 		grid = maxi(2, value)
 ## Lower than the terrain was first built at. Steep ground is where the collision

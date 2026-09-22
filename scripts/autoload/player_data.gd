@@ -210,6 +210,23 @@ const UI_SCALE_MIN := 0.6
 const UI_SCALE_MAX := 1.3
 
 const SAVE_PATH := "user://disantia_save.json"
+## Where the suite writes instead, whenever it is running.
+##
+## The self-test autosaves as it goes — that is exactly what makes a save round trip worth
+## checking — and it does so against whatever the running game's save path is. Which meant that a
+## suite killed half way through (a timeout, a Ctrl-C, a crash on floor sixty) left the *player's*
+## save holding the suite's state: a clock at ten at night, a purse the tests had topped up, a
+## body standing where a measurement had put it. Backing the file up and putting it back at the
+## end only helps if the run reaches the end, and a run that is killed is the run that matters.
+##
+## One string, and the whole class of accident is gone: under `--selftest` the game simply has a
+## different save file.
+const SELFTEST_SAVE_PATH := "user://disantia_selftest_run.json"
+
+
+## The file this process reads and writes. See `SELFTEST_SAVE_PATH`.
+func save_path() -> String:
+	return SELFTEST_SAVE_PATH if OS.get_cmdline_user_args().has("--selftest") else SAVE_PATH
 const SAVE_VERSION := 1
 const AUTOSAVE_SECONDS := 15.0
 
@@ -277,6 +294,8 @@ const SAVE_MODULES: Dictionary = {
 	"tower": "/root/Tower",
 	"forge": "/root/Forge",
 	"bounties": "/root/Bounties",
+	"raids": "/root/Raids",
+	"loc": "/root/Loc",
 }
 var _loaded_modules: Dictionary = {}
 var _modules_consumed: Dictionary = {}
@@ -1530,7 +1549,7 @@ func save_game() -> bool:
 		if module != null and module.has_method("save_data"):
 			payload[key] = module.call("save_data")
 
-	var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	var file: FileAccess = FileAccess.open(save_path(), FileAccess.WRITE)
 	if file == null:
 		push_warning("Could not write save file: %s" % error_string(FileAccess.get_open_error()))
 		return false
@@ -1541,9 +1560,9 @@ func save_game() -> bool:
 
 
 func load_game() -> bool:
-	if not FileAccess.file_exists(SAVE_PATH):
+	if not FileAccess.file_exists(save_path()):
 		return false
-	var file: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.READ)
+	var file: FileAccess = FileAccess.open(save_path(), FileAccess.READ)
 	if file == null:
 		return false
 	var raw: String = file.get_as_text()
@@ -1722,12 +1741,12 @@ func reset_progress() -> void:
 	has_saved_position = false
 	saved_position = Vector3.ZERO
 	_dirty = false
-	if FileAccess.file_exists(SAVE_PATH):
+	if FileAccess.file_exists(save_path()):
 		# Remove through the DirAccess handle so this also works in the browser,
 		# where user:// is a virtual filesystem backed by IndexedDB.
 		var dir: DirAccess = DirAccess.open("user://")
 		if dir != null:
-			dir.remove(SAVE_PATH.get_file())
+			dir.remove(save_path().get_file())
 	var cultivation: Node = get_node_or_null("/root/Cultivation")
 	if cultivation != null and cultivation.has_method("reset"):
 		cultivation.call("reset")

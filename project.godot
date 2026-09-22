@@ -33,6 +33,9 @@ Clock="*res://scripts/autoload/clock.gd"
 Law="*res://scripts/autoload/law.gd"
 Tower="*res://scripts/autoload/tower.gd"
 Bounties="*res://scripts/autoload/bounties.gd"
+Raids="*res://scripts/autoload/raids.gd"
+Loc="*res://scripts/autoload/loc.gd"
+Voice="*res://scripts/autoload/voice.gd"
 
 [display]
 

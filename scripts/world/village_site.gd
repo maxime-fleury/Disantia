@@ -73,6 +73,10 @@ func _ready() -> void:
 	# spawn camp, a square of made ground ten metres above the fire, and every downward ray in
 	# the world landing on a village floor instead of the terrain.
 	position = Vector3(_centre.x, 0.0, _centre.z)
+	# In the group so that the things that need to *find* a village — the raids, looking for the
+	# gate they came for — can ask the site that built it rather than re-deriving the same disc
+	# from the registry and getting the gate on the wrong side of the fence.
+	add_to_group("village_site")
 	_build_square()
 	_build_palisade()
 	_build_huts()
@@ -223,11 +227,16 @@ func _build_square() -> void:
 ## The palisade, with a wide gate on the road side. The gate is *the* thing that makes a village
 ## a place: two banners, two torches and an opening you can see the light through.
 func _build_palisade() -> void:
-	var count: int = 30
+	# One panel per 3.6 m of fence, so the wall follows the village rather than the other way
+	# round. A fixed count is fine while every village is the same size and silently leaves a
+	# bigger one with holes in its palisade the moment they are not — which is exactly what
+	# happened when Towerfall and Stonewatch grew.
+	var count: int = maxi(30, int(round(TAU * _radius / 3.6)))
 	var arc: float = TAU / float(count)
 	# The gate faces the way the road came in, which is where the player arrives from.
 	var gate_angle: float = _yaw
-	var gap: int = 3
+	# And the gate is a gate rather than a gap: wider in a bigger place, in proportion.
+	var gap: int = maxi(3, int(round(float(count) * 0.09)))
 	for k in count:
 		var delta: float = wrapf(arc * float(k) - gate_angle, -PI, PI)
 		if absf(delta) < arc * float(gap) * 0.5:
@@ -445,7 +454,7 @@ func _build_props() -> void:
 		PROPS + "Barrel.gltf", PROPS + "Crate_Wooden.gltf", PROPS + "Pot_1.gltf",
 		PROPS + "Bench.gltf", PROPS + "Stool.gltf",
 	]
-	for i in 10:
+	for i in int(round(10.0 * _radius / 17.0)):
 		var angle: float = rng.randf_range(0.0, TAU)
 		var r: float = sqrt(rng.randf()) * _radius * 0.78
 		var kind: String = String(kinds[rng.randi_range(0, kinds.size() - 1)])
@@ -472,8 +481,11 @@ func _place_people() -> void:
 		_people.append(npc)
 
 
+## The watch scales with the fence. Two men on a twenty-two metre square is a village; two men
+## walking the outside of a thirty-three metre one is a village that has already been robbed.
+## This is also what the raids are measured against, so a bigger village is a harder night.
 func _place_guards() -> void:
-	var count: int = 2
+	var count: int = 2 + int(_radius / 14.0)
 	for i in count:
 		var guard: Node = GuardScript.new()
 		guard.name = "%sGuard%d" % [village_id.capitalize(), i]
@@ -641,6 +653,22 @@ func _glow(tint: Color, alpha: float) -> StandardMaterial3D:
 
 
 # --------------------------------------------------------------------- querying
+
+## A point on the line through the gate, `metres` outside the palisade — or negative for inside
+## it. The gate is the one part of a village that is a *direction* rather than a place, and the
+## two things that care are the raid that comes up the road and anything that wants to put a body
+## down where a body arriving would be standing.
+##
+## The height is the terrain's, not the plaza's: eight metres out is the road, and the road is
+## not flat.
+func gate_point(metres: float) -> Vector3:
+	var x: float = _centre.x + cos(_yaw) * (_radius + metres)
+	var z: float = _centre.z + sin(_yaw) * (_radius + metres)
+	var y: float = _level
+	if _terrain != null and _terrain.has_method("surface_height_at"):
+		y = float(_terrain.call("surface_height_at", x, z))
+	return Vector3(x, y, z)
+
 
 func centre() -> Vector3:
 	return _centre

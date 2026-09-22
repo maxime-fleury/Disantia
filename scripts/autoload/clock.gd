@@ -203,7 +203,15 @@ func skip_to_hour(target: float) -> float:
 # -------------------------------------------------------------------- the light
 
 func _light_key() -> Dictionary:
-	var h: float = hour_float()
+	return light_at(hour_float())
+
+
+## The sun, the light and the sky at *any* hour. Split out of `_light_key` so that the things
+## which have to reason about an hour other than this one — the moon, which is wherever the sun
+## is not, and the tests that check the stars are not up at noon — read the one table the sun is
+## actually posed from, rather than a second copy of it that can drift away from the first.
+func light_at(hour: float) -> Dictionary:
+	var h: float = hour
 	var before: Dictionary = LIGHT_KEYS[0]
 	var after: Dictionary = LIGHT_KEYS[LIGHT_KEYS.size() - 1]
 	for i in LIGHT_KEYS.size():
@@ -238,9 +246,11 @@ func _apply_light() -> void:
 		_sun.rotation_degrees = Vector3(-float(key["elev"]), float(key["az"]), 0.0)
 		_sun.light_color = key["sun"]
 		_sun.light_energy = float(key["energy"])
-		# The valley is 448 m across now, so the shadow distance has to cover a village's worth
-		# of it or the far side of the map is in permanent sunlight at midnight.
-		_sun.directional_shadow_max_distance = 240.0
+		# The valley is 512 m across, so the shadow distance has to cover a village's worth of it
+		# or the far side of the map is in permanent sunlight at midnight. Sized off the map
+		# rather than fixed, because this is the number that quietly goes stale every time the
+		# valley grows and its only symptom is that the shadows stop at a line.
+		_sun.directional_shadow_max_distance = 380.0
 	if _environment == null or not is_instance_valid(_environment):
 		var world_env: WorldEnvironment = get_tree().root.get_node_or_null(
 			"Main/WorldEnvironment") as WorldEnvironment

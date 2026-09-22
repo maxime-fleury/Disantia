@@ -21,10 +21,20 @@ extends Node3D
 @export var invert_y: bool = false
 ## Seconds for the arm to settle after a zoom step.
 @export var zoom_smoothing: float = 12.0
+## How fast the camera's *height* catches up with the body's. The rig is a child of the body, so
+## without this the whole valley is thrown up and down the screen on every jump — the body moves
+## a metre and the camera moves a metre with it on the same frame, which reads as the ground
+## jumping rather than the player. One is a step; this makes it a spring.
+@export var height_smoothing: float = 7.0
 
 var _yaw: float = 0.0
 var _pitch: float = 0.0
 var _distance: float = 6.0
+## The camera's own idea of how high it is, in world space. The rig's local y is set to
+## `_smoothed_y - body_y` every frame, which is what keeps this node a child of the body while
+## the height it sits at lags behind it.
+var _smoothed_y: float = 0.0
+var _have_y: bool = false
 
 @onready var _arm: SpringArm3D = get_node_or_null("SpringArm3D")
 
@@ -76,6 +86,34 @@ func _process(delta: float) -> void:
 	_arm.spring_length = lerpf(
 		_arm.spring_length, _distance, clampf(zoom_smoothing * delta, 0.0, 1.0)
 	)
+	_follow_height(delta)
+
+
+## Trails the body's height rather than being welded to it.
+##
+## A ring of ground, a jump and a fall are the three times the body moves fast in this game, and
+## in all three the camera should stay still while the *player* moves — which is what a person
+## looking at a third-person game reads as the character jumping rather than the world. The lag
+## is small on purpose: a metre and a half of smoothing would feel like the camera is drunk, and
+## a tenth of a metre is enough to take the snap out.
+func _follow_height(delta: float) -> void:
+	var body := get_parent() as Node3D
+	if body == null:
+		return
+	var world_y: float = body.global_position.y
+	if not _have_y:
+		_smoothed_y = world_y
+		_have_y = true
+	_smoothed_y = lerpf(_smoothed_y, world_y, clampf(height_smoothing * delta, 0.0, 1.0))
+	# The body is at the feet and the arm hangs 1.5 m above them; this only ever *subtracts* the
+	# part of the body's climb the camera has not caught up with yet.
+	position.y = _smoothed_y - world_y
+
+
+## Drops the smoothing, for a teleport. A warp puts the body somewhere else in one frame, and a
+## camera that then flew across the valley to catch up would be worse than a cut.
+func snap_height() -> void:
+	_have_y = false
 
 
 func _zoom(amount: float) -> void:

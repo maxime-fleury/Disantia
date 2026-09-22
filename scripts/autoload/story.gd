@@ -425,7 +425,41 @@ func _speak_village(who: Dictionary) -> Dictionary:
 ##
 ## The greeting is the same renown line the camp's three use, because a pedlar in a village you
 ## have never visited should still have *heard* of you if you are the reason the road is quiet.
+## A village with its gate in the ground says so before it says anything else.
+##
+## Every role, deliberately, rather than only the keeper: the stalls are ash, so the merchant has
+## nothing to sell and the healer has nowhere to work, and a player who had to find the *right*
+## person to hand over the crystals would be doing paperwork. The role's own conversation is kept
+## underneath — the shelf is shut, but the chain, the board and the wound are still there to be
+## asked about — so the village is damaged rather than replaced.
 func _village_speech(role: String, village_id: String, speaker: String) -> Dictionary:
+	var speech: Dictionary = _village_role_speech(role, village_id, speaker)
+	if Raids.is_sacked(village_id):
+		return _sacked_speech(village_id, speech)
+	return speech
+
+
+func _sacked_speech(village_id: String, speech: Dictionary) -> Dictionary:
+	var cost: int = Raids.repair_cost(village_id)
+	var name_of: String = String(Villages.def(village_id).get("name", village_id))
+	var short: int = cost - PlayerData.crystals
+	var options: Array = [{
+		"key": "mend",
+		"label": "Mend the gate — %d crystals" % cost,
+		"blurb": ("They will not start it without the price in hand." if short <= 0
+			else "You are %d crystals short of it." % short),
+		"effect": {"kind": "mend"},
+	}]
+	for option: Dictionary in (speech.get("options", []) as Array):
+		options.append(option)
+	return {
+		"line": "%s is a gap in a fence, and it can be seen from the road."
+			% name_of + " Nobody has anything for sale until it is standing again.",
+		"options": options,
+	}
+
+
+func _village_role_speech(role: String, village_id: String, speaker: String) -> Dictionary:
 	var village: Dictionary = Villages.def(village_id)
 	var village_name: String = String(village.get("name", ""))
 	var greeting: String = String(RENOWN[renown_tier()]["greeting"])
@@ -615,6 +649,13 @@ func _apply_menu_effect(effect: Dictionary) -> String:
 			if not next.is_empty():
 				out += " Next: %s" % String(next["detail"])
 			return out
+		"mend":
+			if not Raids.is_sacked(village_id):
+				return "It is standing. Whatever you were about to pay for, it was not that."
+			if not Raids.can_repair(village_id):
+				return "You cannot cover the price, and nobody in the valley works on credit."
+			Raids.repair(village_id)
+			return "The gate goes back up, and the first stall opens before the last post is in."
 		"heal":
 			var cost: int = int(effect.get("cost", 0))
 			if not PlayerData.spend_crystals(cost):

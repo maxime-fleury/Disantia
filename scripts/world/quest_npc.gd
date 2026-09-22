@@ -27,6 +27,10 @@ var _bob: float = 0.0
 
 func _ready() -> void:
 	add_to_group("quest_npc")
+	# Everything the interact key does something with. One group, so the interface can ask the
+	# whole world the same question instead of a hard-coded list of the kinds of thing that
+	# answer to a key — which is a list that goes stale the first time somebody adds a fourth.
+	add_to_group("interactable")
 	_sit_on_ground()
 	_build_body()
 	_build_marker()
@@ -220,6 +224,20 @@ func in_range() -> bool:
 	var d: Vector3 = player.global_position - global_position
 	d.y = 0.0
 	return d.length() <= interact_radius
+
+
+## What the interact key would do here, in words, or "" when the player is nowhere near.
+##
+## This is the answer to a bug the player reported as "you cannot get into the tower": the
+## climb, the curve, the record and the door's own conversation were all built and all tested,
+## and the player stood at the foot of it pressing nothing, because nothing in the world had
+## ever said that a key does anything at all. A door with no handle is a wall.
+##
+## Overridden by whoever has something more specific to say.
+func interact_prompt() -> String:
+	if not in_range():
+		return ""
+	return Loc.fill("speak with %s", [npc_name])
 
 
 ## Hands in a finished task, or explains the current one. Public so the tests and the

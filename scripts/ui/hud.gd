@@ -92,6 +92,8 @@ var _modal_panel: PanelContainer
 var _modal_dim: ColorRect
 var _modal_band: TextureRect
 var _modal_summary: Label
+## The two language buttons, so the one in force can be lit without rebuilding the panel.
+var _language_buttons: Array = []
 ## Kept so the open/close fade is a single tween rather than a new one per toggle.
 var _modal_tween: Tween
 var _aura_blurb: Label
@@ -113,6 +115,11 @@ var _dialogue_speaker: Label
 var _dialogue_line: Label
 var _dialogue_options: VBoxContainer
 var _dialogue_hint: Label
+## The two buttons that turn the voices on and off, kept so the lit one can be moved.
+var _voice_buttons: Array = []
+## Whether the hint strip is currently showing something the player can press, so its colour is
+## only written when it changes.
+var _hint_active: bool = false
 var _dialogue_tween: Tween
 var _dialogue_buttons: Array = []
 var _wares_scroll: ScrollContainer
@@ -161,6 +168,11 @@ func _ready() -> void:
 	_build_wayfinder()
 	# Deferred, and again on every resize: each panel is scaled about its own anchored
 	# corner, which needs its laid-out size. At _ready the layout has not run yet.
+	# Language, which is a *display* setting like the interface size and needs the same thing
+	# from this layer: the engine re-translates every label it draws by itself, and everything
+	# this file built by hand — the status strip, the settings summary, the pressure readout —
+	# has to be rebuilt. One signal, one refresh.
+	Loc.changed.connect(_on_language_changed)
 	_settings_button.icon = _gear_texture()
 	_settings_button.pressed.connect(_toggle_settings)
 	_stats_toggle.pressed.connect(_toggle_stats)
@@ -840,6 +852,45 @@ func _build_settings_modal() -> void:
 	size_row.add_child(bigger)
 	body.add_child(size_row)
 
+	# Language sits beside the interface size because it is the same kind of decision: how the
+	# game is read rather than what the game is. Both buttons are always offered and the one in
+	# force is the one that is lit, so a player who cannot read the current language can still
+	# find the other one by shape.
+	body.add_child(_make_heading("LANGUAGE", Color("9ad8ff")))
+	var language_row := HBoxContainer.new()
+	language_row.name = "LanguageRow"
+	language_row.add_theme_constant_override("separation", 8)
+	for i in Loc.LANGUAGES.size():
+		var pick := Button.new()
+		pick.name = "Language%d" % i
+		pick.text = String(Loc.LANGUAGE_NAMES[i])
+		pick.focus_mode = Control.FOCUS_NONE
+		pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pick.disabled = i == Loc.language
+		pick.pressed.connect(_on_language_pressed.bind(i))
+		language_row.add_child(pick)
+		_language_buttons.append(pick)
+	body.add_child(language_row)
+
+	# Spoken lines are the one thing in this game some players want off, and a player who wants
+	# them off should not have to find a config file to say so. A row, two buttons, lit the same
+	# way the language row is.
+	body.add_child(_make_heading("VOICES", Color("9ad8ff")))
+	var voice_row := HBoxContainer.new()
+	voice_row.name = "VoiceRow"
+	voice_row.add_theme_constant_override("separation", 8)
+	for i in 2:
+		var pick := Button.new()
+		pick.name = "Voices%d" % i
+		pick.text = "On" if i == 0 else "Off"
+		pick.focus_mode = Control.FOCUS_NONE
+		pick.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		pick.disabled = (i == 0) == Voice.enabled
+		pick.pressed.connect(_on_voices_pressed.bind(i == 0))
+		voice_row.add_child(pick)
+		_voice_buttons.append(pick)
+	body.add_child(voice_row)
+
 	body.add_child(_make_heading("AURA", Color("9ad8ff")))
 	var grid := GridContainer.new()
 	grid.name = "AuraGrid"
@@ -1235,6 +1286,47 @@ func _on_rep_completed(_id: String, reps: int) -> void:
 
 # ------------------------------------------------------------------- refreshing
 
+## Switching language, from the settings panel.
+##
+## Everything the engine draws — every label, button, heading and panel row — re-translates
+## itself the moment the locale changes, which is the whole reason the translation lives in
+## Godot's own server rather than in a lookup table this file would have to consult. What is left
+## for this method is the text that was *built*, with numbers in it: the strip at the foot of the
+## screen, the settings summary, the pressure readout. Those are strings by the time the locale
+## changes, and a string cannot be re-translated after the fact.
+func _on_language_changed() -> void:
+	_refresh()
+	_update_status()
+	_refresh_language_buttons()
+
+
+func _on_language_pressed(index: int) -> void:
+	Audio.play("ui_toggle", -6.0)
+	Loc.set_language(index)
+	_refresh_language_buttons()
+
+
+## Lights the language in force. The panel is not rebuilt — every label in it, including these
+## two buttons, re-translates itself — so the only thing that needs telling is which one is
+## already chosen.
+func _refresh_language_buttons() -> void:
+	for i in _language_buttons.size():
+		var button: Button = _language_buttons[i]
+		if button != null and is_instance_valid(button):
+			button.disabled = i == Loc.language
+
+
+func _on_voices_pressed(on: bool) -> void:
+	Audio.play("ui_toggle", -6.0)
+	Voice.set_enabled(on)
+	# Hearing the change is the whole feedback: a player who turns the voices *on* gets the next
+	# line spoken, and one who turns them off hears the current one stop mid-sentence.
+	for i in _voice_buttons.size():
+		var button: Button = _voice_buttons[i]
+		if button != null and is_instance_valid(button):
+			button.disabled = (i == 0) == Voice.enabled
+
+
 func _refresh() -> void:
 	_refresh_accum = 0.0
 	_refresh_map_legend()
@@ -1242,24 +1334,25 @@ func _refresh() -> void:
 	# The line under the settings heading, filled from the same getters the plate over your
 	# head uses so the panel cannot report a stage or a score you do not have.
 	if _modal_summary != null:
-		_modal_summary.text = "Stage %d · %s · %d crystals · power %s" % [
+		_modal_summary.text = Loc.fill("Stage %d · %s · %d crystals · power %s", [
 			Cultivation.stage(), Cultivation.realm_name(), PlayerData.crystals,
 			PlayerData.power_text(),
-		]
+		])
 
-	_realm_label.text = "%s · %s" % [Cultivation.realm_name(), Cultivation.realm_label()]
+	_realm_label.text = Loc.fill("%s · %s", [
+		Loc.say(Cultivation.realm_name()), Cultivation.realm_label()])
 	_realm_label.add_theme_color_override("font_color", Color("ffd76e"))
-	_coeff_label.text = "Stat gain ×%.2f" % PlayerData.gain_coefficient
+	_coeff_label.text = Loc.fill("Stat gain ×%.2f", [PlayerData.gain_coefficient])
 	_coeff_label.add_theme_color_override("font_color", Color("7dff9b").lerp(
 		Color("ffd76e"), clampf((PlayerData.gain_coefficient - 1.0) / 3.0, 0.0, 1.0)
 	))
 
-	_refinement_label.text = "REFINEMENT %d   ·   next in %.0fs" % [
+	_refinement_label.text = Loc.fill("REFINEMENT %d   ·   next in %.0fs", [
 		Cultivation.refinement, Cultivation.cycle_required() - Cultivation.cycle,
-	]
+	])
 	_set_bar(_refinement_bar, Cultivation.cycle_ratio())
 
-	_crystals_label.text = "Crystals %d" % PlayerData.crystals
+	_crystals_label.text = Loc.fill("Crystals %d", [PlayerData.crystals])
 	_refresh_path()
 	_refresh_tracker()
 
@@ -1704,8 +1797,11 @@ func _refresh_dialogue() -> void:
 		var option: Dictionary = options[i]
 		var button := Button.new()
 		button.name = "Option%d" % (i + 1)
+		# `get` rather than `[]`: a menu option is allowed to be nothing but a label — "Another
+		# time", "Not today" — and an unconditional read of `blurb` turned every one of those
+		# into a printed engine error and half-drawn button.
 		button.text = "%d.  %s\n      %s" % [
-			i + 1, String(option["label"]), String(option["blurb"]),
+			i + 1, String(option.get("label", "")), String(option.get("blurb", "")),
 		]
 		button.alignment = HORIZONTAL_ALIGNMENT_LEFT
 		button.focus_mode = Control.FOCUS_NONE
@@ -2046,9 +2142,13 @@ func _update_status() -> void:
 			if Cultivation.zone_locked \
 			else "   ·   %s  ×%.1f qi" % [Cultivation.zone_name, Cultivation.zone_boost]
 
+	# The two control lines go through `Loc.say` by hand: the label's own text is the whole block
+	# — keys, clock, FPS and the valley's state in one string — so the engine's automatic lookup
+	# has nothing to match on. Translating the two *constant* lines and concatenating the rest is
+	# the smallest version of that, and it is why they are written as whole lines in the table.
 	_status_label.text = (
-		"WASD move · Shift run · Space jump · click to strike · Q dash · C cultivate · B break through\n"
-		+ "E talk to the elder · 1/2/3 drill the body · X qi pressure · T recall · Tab settings · V stats\n"
+		Loc.say("WASD move · Shift run · Space jump · click to strike · Q dash · C cultivate · B break through") + "\n"
+		+ Loc.say("E talk to the elder · 1/2/3 drill the body · X qi pressure · T recall · Tab settings · V stats") + "\n"
 		+ "%s   ·   %d FPS%s%s%s%s%s%s" % [Clock.clock_text(), Engine.get_frames_per_second(),
 			pointer, state, dash, zone, _attune_state(), valley]
 	)
@@ -2056,11 +2156,65 @@ func _update_status() -> void:
 	# anywhere else on screen. The rest — the drill keys, the elder, the spirit pillars — is
 	# in the status strip at the foot of the interface, and the room the prose was taking is
 	# what the technique list above it now occupies.
+	# The prompt takes the place of the first line rather than sitting above it. The panel is a
+	# container with the map pinned under it, so a line that comes and goes resizes both of them
+	# on every step past an elder — and the room to say something new here is the room the strike
+	# line occupies, because the strike line is the thing the player already knows by then.
+	var context: String = _context_line()
 	_hint.text = (
-		"Click (or F) to strike — posts raise ATTACK, raiders drop crystals.\n"
-		+ "Tap 1, 2 or 3 to drill BODY: it costs blood, not qi, and widens your HP cap."
+		(context if context != ""
+			else Loc.say("Click (or F) to strike — posts raise ATTACK, raiders drop crystals."))
+		+ "\n"
+		+ Loc.say("Tap 1, 2 or 3 to drill BODY: it costs blood, not qi, and widens your HP cap.")
 	)
+	_refresh_hint_tint(context != "")
 	_refresh_pressure()
+
+
+## Says, in colour, that the line above is a *prompt* rather than advice. Without it the two
+## read the same, and the one that has to be noticed is the one that can be acted on.
+##
+## Written only when it changes: a theme override is a redraw, and this runs every frame.
+func _refresh_hint_tint(active: bool) -> void:
+	if active == _hint_active:
+		return
+	_hint_active = active
+	_hint.add_theme_color_override(
+		"font_color", Color("ffe6a8") if active else Color("8b95a3"))
+
+
+## What the interact key would do right now, or the standing advice when it would do nothing.
+##
+## The world answers this question itself: every node in the `interactable` group says what it
+## is and how far away it counts, and the nearest one wins. That is the whole interface — one
+## line, in the place the eye already goes, that changes when there is something to press.
+##
+## It is the cheapest fix in the project and it was the most expensive omission: the tower's
+## climb was built, composed, tested and unreachable, because the player had no way to learn a
+## key did anything at the door.
+func _context_line() -> String:
+	var player: Node3D = get_tree().get_first_node_in_group("player") as Node3D
+	if player == null:
+		return ""
+	var best: String = ""
+	var best_distance: float = INF
+	for node: Node in get_tree().get_nodes_in_group("interactable"):
+		if not node.has_method("interact_prompt") or node is not Node3D:
+			continue
+		var what: String = String(node.call("interact_prompt"))
+		if what == "":
+			continue
+		# Flat distance, because every one of these is a thing on the ground: an elder on a
+		# rock 2 m above the player is *nearer* than a door 6 m away, and the heights are noise.
+		var away: Vector3 = (node as Node3D).global_position - player.global_position
+		away.y = 0.0
+		var here: float = away.length()
+		if here < best_distance:
+			best_distance = here
+			best = what
+	if best == "":
+		return ""
+	return Loc.fill("E — %s", [best])
 
 
 ## The world's state as one line: where the body stands, what is on it, and the hour.
@@ -2071,16 +2225,22 @@ func _update_status() -> void:
 ## four permanent segments is a status line nobody reads.
 func _valley_state() -> String:
 	var parts: Array = []
+	# The raid goes first, ahead of where the body is standing. A line that leads with the village
+	# you are in and *then* mentions that another one is on fire tonight is a line that tells you
+	# what you already know before the thing you needed to know.
+	var alarm: String = Raids.warning()
+	if alarm != "":
+		parts.append(alarm)
 	var here: Dictionary = Haven.inside()
 	if not here.is_empty():
-		parts.append("%s — the watch holds this ground" % String(
-			here.get("name", "here")).to_upper())
+		parts.append(Loc.fill("%s — the watch holds this ground", [
+			String(here.get("name", "here")).to_upper()]))
 	if Tower.inside():
 		var readout: Dictionary = Tower.readout()
-		parts.append("FLOOR %d of %d — %s" % [int(readout.get("depth", 0)),
-			int(readout.get("floors", 0)), String(readout.get("band", ""))])
+		parts.append(Loc.fill("FLOOR %d of %d — %s", [int(readout.get("depth", 0)),
+			int(readout.get("floors", 0)), Loc.say(String(readout.get("band", "")))]))
 	elif Tower.deepest > 0:
-		parts.append("the tower stands at %d" % Tower.deepest)
+		parts.append(Loc.fill("the tower stands at %d", [Tower.deepest]))
 	if Law.is_wanted():
 		var caught_in: String = Law.jailed_in()
 		if caught_in == "":
@@ -2090,13 +2250,16 @@ func _valley_state() -> String:
 			# Both branches take the rung, the village and the sum. The rung is the *label*, not the
 			# word "watched": being hunted and being an outlaw are the same sentence with a louder
 			# first word, and hardcoding one of them here silently cost the line an argument.
-			parts.append(("%s IN %s — %d crystals, or the bars" if Law.in_prison()
-				else "%s IN %s — %d crystals settles it")
-				% [Law.label(Law.wanted_at(caught_in)).to_upper(),
-					String(Villages.def(caught_in).get("name", caught_in)).to_upper(), owed])
+			parts.append(Loc.fill(("%s IN %s — %d crystals, or the bars" if Law.in_prison()
+				else "%s IN %s — %d crystals settles it"), [
+					Loc.say(Law.label(Law.wanted_at(caught_in)).to_upper()),
+					String(Villages.def(caught_in).get("name", caught_in)).to_upper(), owed]))
 	if PlayerData.wounds > 0:
-		parts.append("%d wound%s — the breath comes short" % [PlayerData.wounds,
-			"" if PlayerData.wounds == 1 else "s"])
+		# The plural is a separate row rather than a rule, because French does not pluralise
+		# the way English does and a translation is allowed to say so.
+		parts.append(Loc.fill("%d wound%s — the breath comes short" if PlayerData.wounds == 1
+			else "%d wounds%s — the breath comes short",
+			[PlayerData.wounds, ""]))
 	if parts.is_empty():
 		return ""
 	return "   ·   " + "   ·   ".join(parts)
@@ -2128,7 +2291,7 @@ func _refresh_pressure() -> void:
 		return
 	var skill: Node3D = _pressure_skill()
 	if skill == null:
-		_pressure_label.text = "Qi Pressure — unavailable"
+		_pressure_label.text = Loc.say("Qi Pressure — unavailable")
 		return
 	if not skill.has_method("state"):
 		_pressure_label.visible = false
@@ -2138,9 +2301,9 @@ func _refresh_pressure() -> void:
 	if not bool(state["unlocked"]):
 		# Locked is the one case worth stating as a goal rather than as a state: the
 		# number to reach is the whole message.
-		_pressure_label.text = "Qi Pressure — needs %.0f QI held (you have %.0f)" % [
+		_pressure_label.text = Loc.fill("Qi Pressure — needs %.0f QI held (you have %.0f)", [
 			float(state["unlock_qi"]), PlayerData.get_cap("qi")
-		]
+		])
 	elif bool(state["active"]):
 		var aura: Color = state["color"]
 		tint = aura.lightened(0.25)

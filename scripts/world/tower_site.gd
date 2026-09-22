@@ -70,6 +70,7 @@ func _ready() -> void:
 	_build_exterior()
 	_build_stage()
 	add_to_group("tower_site")
+	add_to_group("interactable")
 	# Registered as a place to keep clear of, the same way the villages are: nothing else in the
 	# world may be placed on the tower's plain.
 	Villages.register_site("tower", "The Tower", Vector2(_base.x, _base.z), radius + 12.0)
@@ -605,6 +606,32 @@ func _warp_player(target: Vector3) -> void:
 
 # ------------------------------------------------------------------ interaction
 
+## How far out from the middle of the tower the door still counts as *reachable*.
+##
+## Generous on purpose, and wider than the shell plus a body: the door is set into a wall, the
+## player arrives along a road that curves, and a key that only answers when you are standing on
+## one exact tile is a key that does not answer. The plaza the tower stands on is `radius + 6`
+## across, so the whole worked ground in front of the door is inside this.
+func door_reach() -> float:
+	return radius + 6.0
+
+
+## What the key does here, or "" when there is nothing to press it at.
+func interact_prompt() -> String:
+	var player: Node3D = get_tree().get_first_node_in_group("player") as Node3D
+	if player == null:
+		return ""
+	if Tower.inside():
+		if _flat_distance(player.global_position, _entry_pad.global_position) <= 3.2:
+			return Loc.say("take the stair")
+		if _flat_distance(player.global_position, _gate_pad.global_position) <= 3.4:
+			return Loc.say("go up") if _cleared_here else Loc.say("the floor is not clear yet")
+		return ""
+	if _flat_distance(player.global_position, _base) <= door_reach():
+		return Loc.say("the tower's door")
+	return ""
+
+
 func _unhandled_input(event: InputEvent) -> void:
 	if not event.is_action_pressed("interact") or _interact_cooldown > 0.0:
 		return
@@ -614,7 +641,7 @@ func _unhandled_input(event: InputEvent) -> void:
 	# The door, from outside: a conversation rather than a key, because the stairhead and the
 	# frontier are two different runs and the door is where the choice belongs.
 	if not Tower.inside():
-		if _flat_distance(player.global_position, _base) <= radius + 4.0:
+		if _flat_distance(player.global_position, _base) <= door_reach():
 			get_viewport().set_input_as_handled()
 			Story.begin("tower_door")
 		return

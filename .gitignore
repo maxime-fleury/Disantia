@@ -8,6 +8,9 @@
 # Editor session metadata, not part of the project
 /.freebuff/
 
+# Python bytecode from tools/make_voice.py
+tools/__pycache__/
+
 # OS noise
 .DS_Store
 Thumbs.db

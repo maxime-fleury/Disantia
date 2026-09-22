@@ -36,6 +36,12 @@ mkdir -p "$OUT_DIR"
 # exported binaries as project assets and litters the folder with .import files.
 touch build/.gdignore
 
+echo "Importing assets ..."
+# An import pass first, and not as a formality: the export ships *imported* resources, so a file
+# added since the last time the editor was open is a file the export quietly leaves out — and the
+# symptom is a character who does not speak rather than a build that fails.
+"$GODOT" --headless --path . --import >/dev/null 2>&1 || true
+
 echo "Exporting preset '$PRESET' to $OUT_EXE ..."
 "$GODOT" --headless --path . --export-release "$PRESET" "$OUT_EXE"
 echo "Done: $(du -sh "$OUT_DIR" | cut -f1) in $OUT_DIR"

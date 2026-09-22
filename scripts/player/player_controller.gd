@@ -1032,6 +1032,11 @@ func warp_to(target: Vector3) -> void:
 	global_position = _bearing_ground(target)
 	velocity = Vector3.ZERO
 	reset_fall_tracking()
+	# A warp is not a jump. The camera trails the body's height on purpose, and every teleport in
+	# the game — a death, a prison cell, a tower floor — would otherwise be a two-hundred-metre
+	# slide on the way there.
+	if _camera_rig != null and _camera_rig.has_method("snap_height"):
+		_camera_rig.call("snap_height")
 
 
 ## `target` if a body fits there, otherwise the nearest offset that does. Near-first, so the

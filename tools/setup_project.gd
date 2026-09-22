@@ -34,6 +34,23 @@ func _initialize() -> void:
 	# reads it during their _ready except the crowd, which is in the world rather than an
 	# autoload and so cannot run before any of this.
 	_apply("autoload/Story", "*res://scripts/autoload/story.gd")
+	# Sanctuary and Haven are read by the world as it builds — a village asks whether a point is
+	# inside somebody else's sanctuary while it places its own — so they come before the nodes that
+	# ask, which is any of them.
+	_apply("autoload/Haven", "*res://scripts/autoload/haven.gd")
+	_apply("autoload/Forge", "*res://scripts/autoload/forge.gd")
+	_apply("autoload/Villages", "*res://scripts/autoload/villages.gd")
+	# Clock is named Clock rather than Sky because `Sky` is a Godot class and an autoload that
+	# shadows one compiles into something quietly wrong.
+	_apply("autoload/Clock", "*res://scripts/autoload/clock.gd")
+	_apply("autoload/Law", "*res://scripts/autoload/law.gd")
+	_apply("autoload/Tower", "*res://scripts/autoload/tower.gd")
+	_apply("autoload/Bounties", "*res://scripts/autoload/bounties.gd")
+	_apply("autoload/Raids", "*res://scripts/autoload/raids.gd")
+	# Loc before Voice, and both after PlayerData: each reads its own slice of the save during
+	# `_ready`, and Voice speaks through Loc's table, and listens to Story.
+	_apply("autoload/Loc", "*res://scripts/autoload/loc.gd")
+	_apply("autoload/Voice", "*res://scripts/autoload/voice.gd")
 	_apply("autoload/SelfTest", "*res://tests/self_test.gd")
 
 	_apply("display/window/size/viewport_width", 1280)

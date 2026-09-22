@@ -16,6 +16,7 @@
 [ext_resource type="Script" path="res://scripts/world/people.gd" id="14_people"]
 [ext_resource type="Script" path="res://scripts/world/tower_site.gd" id="15_tower"]
 [ext_resource type="Script" path="res://scripts/world/villages_place.gd" id="16_villages"]
+[ext_resource type="Script" path="res://scripts/world/night_sky.gd" id="17_nightsky"]
 
 [sub_resource type="ProceduralSkyMaterial" id="Sky_mat"]
 sky_top_color = Color(0.25, 0.42, 0.72, 1)
@@ -49,6 +50,11 @@ light_color = Color(1, 0.96, 0.88, 1)
 shadow_enabled = true
 directional_shadow_max_distance = 220.0
 
+; The stars and the moon. Drawn over the procedural sky and faded out by the clock, so the day
+; is untouched and the night is a sky rather than a black lid.
+[node name="NightSky" type="MeshInstance3D" parent="."]
+script = ExtResource("17_nightsky")
+
 [node name="Terrain" type="StaticBody3D" parent="."]
 script = ExtResource("2_terrain")
 
@@ -62,6 +68,11 @@ script = ExtResource("16_villages")
 
 [node name="Scatter" type="Node3D" parent="."]
 script = ExtResource("5_scatter")
+; The valley is 2.5 times the area it was, and the scatter is per square metre. Left at 1.0 the
+; trees, ferns and pebbles would have multiplied with the map and the new ground would be a
+; thicker forest than the old one rather than more of the same country. Knocked down so a walk
+; across it reads the same, with room between the trunks to see who is coming.
+density_multiplier = 0.45
 
 [node name="Camp" type="Node3D" parent="."]
 script = ExtResource("6_camp")
